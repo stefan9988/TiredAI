@@ -1,8 +1,11 @@
 """Project settings, read from environment variables and an optional .env file (see .env.example)."""
 
+import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 
@@ -13,6 +16,72 @@ def _path(name: str, default: str) -> Path:
     # Relative paths are resolved against the project root, so scripts work from any directory.
     path = Path(os.getenv(name) or default)
     return path if path.is_absolute() else ROOT / path
+
+
+def _parsed(env: Mapping[str, str], name: str, parse, kind: str):
+    """Parse an optional variable; empty or unset means 'not configured'."""
+    raw = (env.get(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        return parse(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name}={raw!r} is not a valid {kind}") from exc
+
+
+def _bool(raw: str) -> bool:
+    values = {"true": True, "1": True, "yes": True, "false": False, "0": False, "no": False}
+    if raw.lower() not in values:
+        raise ValueError(raw)
+    return values[raw.lower()]
+
+
+def _json_object(raw: str) -> dict[str, Any]:
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError(raw)
+    return value
+
+
+@dataclass(frozen=True)
+class LLMSettings:
+    """Chat model settings. Parameters left unset are not sent, so the provider's defaults apply."""
+
+    model: str
+    base_url: str | None
+    temperature: float | None
+    top_p: float | None
+    max_tokens: int | None
+    seed: int | None
+    frequency_penalty: float | None
+    presence_penalty: float | None
+    reasoning_effort: str | None
+    extra_params: dict[str, Any]
+    timeout_seconds: float | None
+    max_retries: int
+    streaming: bool
+    system_prompt_path: Path
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> "LLMSettings":
+        prompt = Path(env.get("SYSTEM_PROMPT_PATH") or "prompts/system.md")
+        max_retries = _parsed(env, "LLM_MAX_RETRIES", int, "integer")
+        return cls(
+            model=env.get("LLM_MODEL") or "nvidia/nemotron-3-ultra-550b-a55b:free",
+            base_url=env.get("LLM_BASE_URL") or None,
+            temperature=_parsed(env, "LLM_TEMPERATURE", float, "number"),
+            top_p=_parsed(env, "LLM_TOP_P", float, "number"),
+            max_tokens=_parsed(env, "LLM_MAX_TOKENS", int, "integer"),
+            seed=_parsed(env, "LLM_SEED", int, "integer"),
+            frequency_penalty=_parsed(env, "LLM_FREQUENCY_PENALTY", float, "number"),
+            presence_penalty=_parsed(env, "LLM_PRESENCE_PENALTY", float, "number"),
+            reasoning_effort=env.get("LLM_REASONING_EFFORT") or None,
+            extra_params=_parsed(env, "LLM_EXTRA_PARAMS", _json_object, "JSON object") or {},
+            timeout_seconds=_parsed(env, "LLM_TIMEOUT_SECONDS", float, "number"),
+            max_retries=2 if max_retries is None else max_retries,
+            streaming=_parsed(env, "LLM_STREAMING", _bool, "boolean (true/false)") is not False,
+            system_prompt_path=prompt if prompt.is_absolute() else ROOT / prompt,
+        )
 
 
 @dataclass(frozen=True)
@@ -29,6 +98,7 @@ class Settings:
     model_cache_dir: Path
     embedding_cache_path: Path
     openrouter_api_key: str | None
+    llm: LLMSettings
 
     @classmethod
     def load(cls) -> "Settings":
@@ -46,4 +116,5 @@ class Settings:
             model_cache_dir=_path("MODEL_CACHE_DIR", ".cache/fastembed"),
             embedding_cache_path=_path("EMBEDDING_CACHE_PATH", ".cache/embeddings.sqlite"),
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
+            llm=LLMSettings.from_env(os.environ),
         )
