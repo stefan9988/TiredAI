@@ -1,8 +1,5 @@
-import zlib
-from collections import Counter
-
 import pytest
-from conftest import raw_frame
+from conftest import FakeEncoder, raw_frame
 from qdrant_client import QdrantClient, models
 
 from tiredai.documents import point_id, products
@@ -10,25 +7,6 @@ from tiredai.preprocessing import normalize
 from tiredai.vectorstore import DENSE, DOCUMENT_KEY, SPARSE, index_products, verify_index
 
 COLLECTION = "tires"
-
-
-class FakeEncoder:
-    """Deterministic, offline stand-in for fastembed: vectors are built from hashed lowercase tokens."""
-
-    dense_dim = 8
-
-    def encode_documents(self, texts):
-        return [self.dense(t) for t in texts], [self.sparse(t) for t in texts]
-
-    def dense(self, text):
-        vector = [0.0] * self.dense_dim
-        for token in text.lower().split():
-            vector[zlib.crc32(token.encode()) % self.dense_dim] += 1.0
-        return vector
-
-    def sparse(self, text):
-        counts = Counter(zlib.crc32(token.encode()) for token in text.lower().split())
-        return models.SparseVector(indices=list(counts), values=[float(c) for c in counts.values()])
 
 
 CATALOG = products(

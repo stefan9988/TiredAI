@@ -1,11 +1,12 @@
 """The shopping assistant: a LangChain agent on an OpenRouter chat model, with per-thread memory."""
 
-from collections.abc import Iterator, Sequence
+from collections.abc import AsyncIterator, Iterator, Sequence
 from pathlib import Path
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessageChunk
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openrouter import ChatOpenRouter
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -66,13 +67,32 @@ def build_agent(
     )
 
 
+def thread_config(thread_id: str) -> RunnableConfig:
+    return {"configurable": {"thread_id": thread_id}}
+
+
+def _user_input(message: str) -> dict:
+    return {"messages": [{"role": "user", "content": message}]}
+
+
+def _answer_text(chunk: object, metadata: dict) -> str:
+    # Only answer text from the model: tool results and reasoning blocks are not shown.
+    if isinstance(chunk, AIMessageChunk) and metadata.get("langgraph_node") == "model":
+        return chunk.text
+    return ""
+
+
 def stream_reply(agent: CompiledStateGraph, message: str, thread_id: str) -> Iterator[str]:
     """Send one shopper message and yield the assistant's answer text as it is generated."""
-    for chunk, metadata in agent.stream(
-        {"messages": [{"role": "user", "content": message}]},
-        {"configurable": {"thread_id": thread_id}},
-        stream_mode="messages",
+    for chunk, metadata in agent.stream(_user_input(message), thread_config(thread_id), stream_mode="messages"):
+        if text := _answer_text(chunk, metadata):
+            yield text
+
+
+async def astream_reply(agent: CompiledStateGraph, message: str, thread_id: str) -> AsyncIterator[str]:
+    """Async version of stream_reply, for the API."""
+    async for chunk, metadata in agent.astream(
+        _user_input(message), thread_config(thread_id), stream_mode="messages"
     ):
-        # Only answer text from the model: tool results and reasoning blocks are not shown.
-        if isinstance(chunk, AIMessageChunk) and metadata.get("langgraph_node") == "model" and chunk.text:
-            yield chunk.text
+        if text := _answer_text(chunk, metadata):
+            yield text

@@ -1,26 +1,11 @@
 import dataclasses
 
 import pytest
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, SystemMessage
-from pydantic import Field
+from conftest import fake_model
+from langchain_core.messages import SystemMessage
 
 from tiredai.agent import build_agent, build_chat_model, load_system_prompt, stream_reply
 from tiredai.config import LLMSettings, Settings
-
-
-class RecordingModel(GenericFakeChatModel):
-    """Fake chat model that streams scripted replies word by word and records every prompt it gets."""
-
-    prompts: list = Field(default_factory=list)
-
-    def _stream(self, messages, *args, **kwargs):
-        self.prompts.append(messages)
-        yield from super()._stream(messages, *args, **kwargs)
-
-
-def fake_model(*replies: str) -> RecordingModel:
-    return RecordingModel(messages=iter(AIMessage(content=r) for r in replies))
 
 
 @pytest.fixture

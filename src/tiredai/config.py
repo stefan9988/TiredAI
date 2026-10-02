@@ -99,6 +99,9 @@ class Settings:
     embedding_cache_path: Path
     openrouter_api_key: str | None
     llm: LLMSettings
+    conversations_path: Path
+    api_host: str
+    api_port: int
 
     @classmethod
     def load(cls) -> "Settings":
@@ -117,4 +120,7 @@ class Settings:
             embedding_cache_path=_path("EMBEDDING_CACHE_PATH", ".cache/embeddings.sqlite"),
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
             llm=LLMSettings.from_env(os.environ),
+            conversations_path=_path("CONVERSATIONS_DB_PATH", "data/conversations.sqlite"),
+            api_host=os.getenv("API_HOST") or "127.0.0.1",
+            api_port=_parsed(os.environ, "API_PORT", int, "integer") or 8000,
         )
