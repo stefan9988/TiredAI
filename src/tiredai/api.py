@@ -16,7 +16,7 @@ import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -61,9 +61,22 @@ class ChatResponse(BaseModel):
     reply: str
 
 
+class ToolCall(BaseModel):
+    """A tool call behind an answer and what the model got back, to check the answer against."""
+
+    id: str | None
+    name: str
+    args: dict[str, Any] | str = Field(description="The arguments the model sent; their raw text if they could not be parsed.")
+    error: str | None = Field(description="The error the model got instead of a result.")
+    result: Any = Field(
+        description="The tool's output. For search_tires: total_matching, returned, order, the filters as applied and the products."
+    )
+
+
 class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
+    tool_calls: list[ToolCall] = Field(default_factory=list, description="An answer's tool calls, in order.")
 
 
 class VectorStoreHealth(BaseModel):
@@ -144,7 +157,8 @@ def create_app(
         """Send a message and receive the reply as Server-Sent Events.
 
         Events: `start` {conversation_id}; then, as the agent works, `status` {stage, text} (stage is
-        thinking, searching or results) and `token` {text} for each chunk of the answer; then `end`
+        thinking, searching or results), `tool_call` {id, name, args, error, result} when a tool call
+        has its result (like ToolCall), and `token` {text} for each chunk of the answer; then `end`
         {conversation_id, reply}. If the model fails, `error` {message} replaces `end`. The chat is
         listed by /conversations from `start` on.
         """
@@ -154,11 +168,10 @@ def create_app(
         async with request.app.state.locks[conversation_id]:
             try:
                 async for event in astream_turn(request.app.state.agent, body.message, conversation_id):
-                    if event["type"] == "token":
+                    kind = event.pop("type")
+                    if kind == "token":
                         parts.append(event["text"])
-                        yield ServerSentEvent(event="token", data={"text": event["text"]})
-                    else:
-                        yield ServerSentEvent(event="status", data={"stage": event["stage"], "text": event["text"]})
+                    yield ServerSentEvent(event=kind, data=event)
             except Exception as exc:
                 logger.exception("Model request failed")
                 yield ServerSentEvent(event="error", data={"message": f"Model request failed: {exc}"})
@@ -172,7 +185,7 @@ def create_app(
 
     @app.get("/conversations/{conversation_id}/messages", responses={404: {"description": "Unknown conversation"}})
     async def conversation_messages(conversation_id: str, request: Request) -> list[ChatMessage]:
-        """A chat's messages in order: the shopper's and the assistant's answers (tool calls are left out)."""
+        """A chat's messages in order: the shopper's and the assistant's answers, each with its tool calls."""
         if await request.app.state.conversations.get(conversation_id) is None:
             raise HTTPException(404, f"Unknown conversation {conversation_id!r}")
         return [ChatMessage(**m) for m in await aget_transcript(request.app.state.agent, conversation_id)]

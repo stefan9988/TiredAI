@@ -151,3 +151,78 @@ export function chatUrl(conversationId) {
 export function chatIdFromUrl(search) {
   return new URLSearchParams(search).get("c") || null;
 }
+
+// A value from a tool call as text: lists are joined, and a range shows the ends that are set
+// ({min: null, max: 60} -> "max 60"). Everything else as is, so values match the data exactly.
+export function formatValue(value) {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) return value.map(formatValue).join(", ");
+  if (typeof value === "object") {
+    return Object.entries(value)
+      .filter(([, v]) => v !== null && v !== undefined)
+      .map(([k, v]) => `${k} ${formatValue(v)}`)
+      .join(", ");
+  }
+  return String(value);
+}
+
+const LEADING_COLUMNS = ["name", "price"];
+
+// Columns of the product table: name and price first, then every other field in the order the products list them.
+export function productColumns(products) {
+  const keys = [...new Set(products.flatMap((p) => Object.keys(p)))];
+  const leading = LEADING_COLUMNS.filter((k) => keys.includes(k));
+  return [...leading, ...keys.filter((k) => !leading.includes(k))];
+}
+
+function fields(values, none) {
+  const entries = Object.entries(values ?? {});
+  if (!entries.length) return `<p class="none">${none}</p>`;
+  return `<dl>${entries.map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(formatValue(v))}</dd>`).join("")}</dl>`;
+}
+
+function productTable(products) {
+  const columns = productColumns(products);
+  const head = columns.map((c) => `<th>${escapeHtml(c)}</th>`).join("");
+  const rows = products.map((p) => `<tr>${columns.map((c) => `<td>${escapeHtml(formatValue(p[c]))}</td>`).join("")}</tr>`);
+  return `<div class="table-scroll"><table class="products"><thead><tr>${head}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+}
+
+function searchResult(result) {
+  const total = Number(result.total_matching ?? 0).toLocaleString("en-US");
+  const html = [
+    "<h4>Filters applied</h4>",
+    fields(result.filters, "None: the whole catalog was searched"),
+    "<h4>Products the model got</h4>",
+    `<p>${result.products.length} of ${total} matching · order: ${escapeHtml(formatValue(result.order))}</p>`,
+  ];
+  if (result.note) html.push(`<p class="none">${escapeHtml(result.note)}</p>`);
+  if (result.products.length) html.push(productTable(result.products));
+  return html.join("");
+}
+
+function toolCall(call, title) {
+  const html = [`<h3>${escapeHtml(title)}</h3>`, "<h4>The model asked for</h4>"];
+  // Arguments that could not be parsed are kept as the raw text the model sent.
+  html.push(typeof call.args === "string" ? `<pre>${escapeHtml(call.args)}</pre>` : fields(call.args, "No arguments"));
+  if (call.error) {
+    html.push("<h4>The model got an error</h4>", `<p class="error">${escapeHtml(call.error)}</p>`);
+  } else if (Array.isArray(call.result?.products)) {
+    html.push(searchResult(call.result));
+  } else {
+    const output = typeof call.result === "string" ? call.result : JSON.stringify(call.result, null, 2);
+    html.push("<h4>The model got</h4>", `<pre>${escapeHtml(output ?? "")}</pre>`);
+  }
+  return `<section class="tool-call">${html.join("")}</section>`;
+}
+
+// The side panel's view of the tool calls behind an answer: for each, what the model asked for and
+// the error or data it got back, so the answer can be checked against it. All text is escaped.
+export function renderToolCalls(calls) {
+  return calls
+    .map((call, i) => {
+      const label = call.name === "search_tires" ? "Search" : call.name;
+      return toolCall(call, calls.length > 1 ? `${label} ${i + 1} of ${calls.length}` : label);
+    })
+    .join("");
+}

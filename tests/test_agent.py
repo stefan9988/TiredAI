@@ -17,6 +17,7 @@ from tiredai.agent import (
     recent_turns,
     stream_reply,
     thread_config,
+    tool_call_details,
     transcript,
 )
 from tiredai.config import AgentSettings, LLMSettings, Settings
@@ -188,7 +189,7 @@ def test_transcript_shows_what_the_shopper_saw():
         AIMessage(content=[{"type": "reasoning", "reasoning": "hidden"}, {"type": "text", "text": "You're welcome."}]),
     ]
 
-    assert transcript(messages) == [
+    assert [{k: m[k] for k in ("role", "content")} for m in transcript(messages)] == [
         {"role": "user", "content": "205/55R15 under $60?"},
         {"role": "assistant", "content": "Let me check. " + SEGMENT_SEPARATOR + "One tire fits."},
         {"role": "user", "content": "Thanks"},
@@ -200,8 +201,54 @@ def test_transcript_keeps_a_turn_that_got_no_answer():
     assert transcript([HumanMessage("Hi"), HumanMessage("Hello?"), AIMessage(content="Hello.")]) == [
         {"role": "user", "content": "Hi"},
         {"role": "user", "content": "Hello?"},
-        {"role": "assistant", "content": "Hello."},
+        {"role": "assistant", "content": "Hello.", "tool_calls": []},
     ]
+
+
+def details(call_id: str, args, *, error=None, result=None, name="search_tires") -> dict:
+    return {"id": call_id, "name": name, "args": args, "error": error, "result": result}
+
+
+def test_each_answer_lists_the_tool_calls_behind_it():
+    found = {"total_matching": 1, "filters": {"size": "205/55R15"}, "products": [{"sku": "N1", "price": 59.93}]}
+    messages = [
+        HumanMessage("205/55R15 under $60?"),
+        AIMessage(content="", tool_calls=[search("call-1", size="205/55R15")]),
+        ToolMessage(content=json.dumps(found), tool_call_id="call-1", name="search_tires"),
+        AIMessage(content="Let me also check Accelera.", tool_calls=[search("call-2", brand="Acelera")]),
+        ToolMessage(content='{"error": "Brand \'Acelera\' is not in the catalog."}', tool_call_id="call-2", name="search_tires"),
+        AIMessage(content="The Accelera Phi-R is $59.93."),
+        HumanMessage("Cheaper?"),  # a turn without answer text: its call shows nowhere
+        AIMessage(content="", tool_calls=[search("call-3", max_price=50)]),
+        ToolMessage(content='{"total_matching": 0}', tool_call_id="call-3", name="search_tires"),
+        HumanMessage("Hello?"),
+        AIMessage(content="Hi."),
+    ]
+
+    answers = [m for m in transcript(messages) if m["role"] == "assistant"]
+
+    assert answers[0]["tool_calls"] == [
+        details("call-1", {"size": "205/55R15"}, result=found),
+        details("call-2", {"brand": "Acelera"}, error="Brand 'Acelera' is not in the catalog."),
+    ]
+    assert answers[1] == {"role": "assistant", "content": "Hi.", "tool_calls": []}
+
+
+def test_tool_call_details_show_failed_calls_as_the_model_got_them():
+    blocked = ToolMessage(content="Tool call limit exceeded.", tool_call_id="call-1", name="search_tires", status="error")
+    unparsable = {"name": "search_tires", "args": "size: 205/55R15", "id": "bad", "error": None, "type": "invalid_tool_call"}
+    nameless = {"name": None, "args": None, "id": "bad-2", "error": None, "type": "invalid_tool_call"}
+
+    assert tool_call_details(search("call-1", size="205/55R15"), blocked) == details(
+        "call-1", {"size": "205/55R15"}, error="Tool call limit exceeded."
+    )
+    assert tool_call_details(unparsable, ToolMessage(content="Error: not parsed", tool_call_id="bad", status="error")) == details(
+        "bad", "size: 205/55R15", error="Error: not parsed"
+    )
+    assert tool_call_details(nameless, None) == details("bad-2", "", error="This call has no result.", name="unknown")
+    assert tool_call_details(search("call-4"), ToolMessage(content="plain text", tool_call_id="call-4")) == details(
+        "call-4", {}, result="plain text"
+    )
 
 
 def turn(user: str, answer: str | None = None, searches: int = 0) -> list:
@@ -312,7 +359,11 @@ def test_unparsable_tool_calls_are_sent_again(settings):
     saved = saved_messages(agent)
     assert [type(m).__name__ for m in saved] == ["HumanMessage", "AIMessage", "ToolMessage", "AIMessage", "ToolMessage", "AIMessage"]
     assert_every_tool_call_answered(saved)
-    assert transcript(saved) == [{"role": "user", "content": "205/55R15?"}, {"role": "assistant", "content": "Found one."}]
+    [_, answer] = transcript(saved)
+    assert answer["content"] == "Found one."
+    failed_call, retried_call = answer["tool_calls"]
+    assert failed_call["args"] == "size: 205/55R15" and "could not be parsed" in failed_call["error"]
+    assert retried_call["args"] == {"size": "205/55R15"} and retried_call["result"]["total_matching"] == 1
 
 
 def test_valid_calls_run_next_to_unparsable_ones(settings):

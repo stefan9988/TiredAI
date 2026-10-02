@@ -6,6 +6,7 @@ import {
   escapeHtml,
   parseSSE,
   renderMarkdown,
+  renderToolCalls,
 } from "./lib.mjs";
 
 const messages = document.querySelector("#messages");
@@ -16,12 +17,24 @@ const send = document.querySelector("#send");
 const meta = document.querySelector("#meta");
 const chats = document.querySelector("#chats");
 const newChat = document.querySelector("#new-chat");
+const details = document.querySelector("#details");
+const detailsTitle = document.querySelector("#details-title");
+const detailsBody = document.querySelector("#details-body");
+const detailsClose = document.querySelector("#details-close");
 
 // The open chat, also kept in the URL. null for a new chat until its first reply starts.
 let conversationId = null;
 let chatList = [];
 // While a reply streams or a chat loads, sending and switching chats wait.
 let busy = false;
+// The tool calls behind each answer (with the data the model got), by the button that shows them.
+const searchesOf = new WeakMap();
+// The button whose searches the side panel shows; null while the panel is closed.
+let detailsFor = null;
+
+const SEARCH_ICON =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/>' +
+  '<path d="m15.5 15.5 5 5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
 
 function setBusy(value) {
   busy = value;
@@ -59,11 +72,60 @@ function addUserMessage(text) {
   scrollDown(true);
 }
 
-function addSavedAnswer(text) {
+function addSavedAnswer(text, toolCalls) {
   const el = document.createElement("article");
   el.className = "message assistant";
   el.innerHTML = `<div class="answer">${renderMarkdown(text)}</div>`;
   messages.append(el);
+  for (const call of toolCalls) addSearch(el, call);
+}
+
+// Adds a tool call to the small button under an answer that shows them in the side panel; the
+// first one creates the button. A streaming reply's open panel updates as its searches finish.
+function addSearch(article, call) {
+  let button = article.querySelector(":scope > button.searches");
+  if (!button) {
+    button = document.createElement("button");
+    button.type = "button";
+    button.className = "searches";
+    button.setAttribute("aria-controls", "details");
+    button.setAttribute("aria-expanded", "false");
+    article.append(button);
+    searchesOf.set(button, []);
+  }
+  const calls = searchesOf.get(button);
+  calls.push(call);
+  button.innerHTML = `${SEARCH_ICON}<span>${calls.length}</span>`;
+  button.title = `Show ${calls.length === 1 ? "the search" : `the ${calls.length} searches`} behind this answer`;
+  button.setAttribute("aria-label", button.title);
+  if (detailsFor === button) renderDetails();
+}
+
+function renderDetails() {
+  const calls = searchesOf.get(detailsFor);
+  detailsTitle.textContent =
+    calls.length === 1 ? "The search behind this answer" : `The ${calls.length} searches behind this answer`;
+  detailsBody.innerHTML = renderToolCalls(calls);
+}
+
+function openDetails(button) {
+  detailsFor?.setAttribute("aria-expanded", "false");
+  detailsFor = button;
+  button.setAttribute("aria-expanded", "true");
+  renderDetails();
+  details.hidden = false;
+  detailsBody.scrollTop = 0;
+  detailsClose.focus();
+}
+
+function closeDetails() {
+  if (!detailsFor) return;
+  const button = detailsFor;
+  const focusWasInside = details.contains(document.activeElement);
+  button.setAttribute("aria-expanded", "false");
+  detailsFor = null;
+  details.hidden = true;
+  if (focusWasInside) button.focus();
 }
 
 function addError(message) {
@@ -101,6 +163,10 @@ function addAssistantMessage() {
   return {
     status(data) {
       statuses.push(data);
+    },
+    toolCall(data) {
+      addSearch(el, data);
+      scrollDown();
     },
     token(chunk) {
       statuses.finish(); // the answer is being written
@@ -152,6 +218,7 @@ async function loadChats() {
 
 // Shows a saved chat, or the empty state for a new one (id null).
 async function openChat(id) {
+  closeDetails();
   conversationId = id;
   renderChats();
   if (!id) {
@@ -168,7 +235,7 @@ async function openChat(id) {
     }
     for (const message of await response.json()) {
       if (message.role === "user") addUserMessage(message.content);
-      else addSavedAnswer(message.content);
+      else addSavedAnswer(message.content, message.tool_calls ?? []);
     }
     scrollDown(true);
   } catch (err) {
@@ -217,6 +284,7 @@ async function sendMessage(text) {
           loadChats(); // the chat is listed (or moved to the top) once its reply starts
         }
         else if (event === "status") reply.status(data);
+        else if (event === "tool_call") reply.toolCall(data);
         else if (event === "token") reply.token(data.text);
         else if (event === "error") reply.fail(data.message);
       }
@@ -258,6 +326,19 @@ document.querySelectorAll(".example").forEach((button) =>
     form.requestSubmit();
   }),
 );
+
+messages.addEventListener("click", (e) => {
+  const button = e.target.closest("button.searches");
+  if (!button) return;
+  if (button === detailsFor) closeDetails();
+  else openDetails(button);
+});
+
+detailsClose.addEventListener("click", closeDetails);
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && detailsFor) closeDetails();
+});
 
 chats.addEventListener("click", (e) => {
   const link = e.target.closest("a.chat");

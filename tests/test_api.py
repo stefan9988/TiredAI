@@ -222,8 +222,48 @@ def test_stream_reports_status_while_searching(settings):
 
     statuses = [data["text"] for name, data in events if name == "status"]
     assert statuses == ["Thinking…", "Searching the catalog: 205/55R15 · up to $60", "Found 1 tire", "Thinking…"]
-    assert [name for name, _ in events if name != "status"] == ["start", "token", "end"]
+    assert [name for name, _ in events if name != "status"] == ["start", "tool_call", "token", "end"]
     assert events[-1][1]["reply"] == "One tire fits."
+
+
+def test_stream_sends_each_search_with_the_data_the_model_got(settings):
+    index_catalog(settings, {}, {"size": "215/60R16"})
+    model = ToolCallingModel(
+        messages=iter([tool_call("search_tires", size="205 55 15", max_price=60), AIMessage(content="One tire fits.")])
+    )
+
+    with TestClient(create_app(settings, model=model, encoder=FakeEncoder())) as client:
+        events = sse_events(client.post("/chat/stream", json={"message": "205/55R15 under $60?"}).text)
+
+    [search] = [data for name, data in events if name == "tool_call"]
+    [sent] = [m for m in model.prompts[1] if isinstance(m, ToolMessage)]
+    assert search["args"] == {"size": "205 55 15", "max_price": 60}  # as the model asked
+    assert search["result"]["filters"] == {"size": "205/55R15", "price": {"min": None, "max": 60}}  # as applied
+    assert search["result"] == json.loads(sent.content) and search["error"] is None
+    assert search["result"]["products"][0]["name"] == "Accelera Phi-R 205/55R15 92V XL"
+    names = [name for name, _ in events]
+    assert names.index("tool_call") < names.index("token")  # shown before the answer is written
+
+
+def test_failed_searches_are_sent_with_their_error(settings):
+    index_catalog(settings, {})
+    model = ToolCallingModel(
+        messages=iter(
+            [
+                unparsable_call("size: 205/55R15"),
+                tool_call("search_tires", size="999/99R99"),
+                AIMessage(content="That size isn't sold here."),
+            ]
+        )
+    )
+
+    with TestClient(create_app(settings, model=model, encoder=FakeEncoder())) as client:
+        events = sse_events(client.post("/chat/stream", json={"message": "999/99R99?"}).text)
+
+    unparsable, unknown_size = [data for name, data in events if name == "tool_call"]
+    assert unparsable["args"] == "size: 205/55R15" and "could not be parsed" in unparsable["error"]
+    assert unknown_size["args"] == {"size": "999/99R99"} and "not in the catalog" in unknown_size["error"]
+    assert unparsable["result"] is None and unknown_size["result"] is None
 
 
 def test_answer_text_around_a_search_is_separated(settings):
@@ -243,7 +283,7 @@ def test_answer_text_around_a_search_is_separated(settings):
     expected = "Let me check." + SEGMENT_SEPARATOR + "One tire fits."
     assert "".join(data["text"] for name, data in events if name == "token") == expected
     assert events[-1][1]["reply"] == expected
-    assert saved[1] == {"role": "assistant", "content": expected}
+    assert saved[1]["content"] == expected
 
 
 def test_stream_without_tools_only_reports_thinking(settings):
@@ -288,10 +328,10 @@ def test_a_chat_can_be_reopened_after_a_restart(settings):
 
     assert [c["id"] for c in listed] == [conversation_id]
     assert response.json() == [
-        {"role": "user", "content": "I need tires"},
-        {"role": "assistant", "content": "Which size?"},
-        {"role": "user", "content": "Cheaper please"},
-        {"role": "assistant", "content": "Here are cheaper ones."},
+        {"role": "user", "content": "I need tires", "tool_calls": []},
+        {"role": "assistant", "content": "Which size?", "tool_calls": []},
+        {"role": "user", "content": "Cheaper please", "tool_calls": []},
+        {"role": "assistant", "content": "Here are cheaper ones.", "tool_calls": []},
     ]
 
 
@@ -303,20 +343,22 @@ def test_messages_of_an_unknown_chat_are_404(settings):
     assert "Unknown conversation" in response.json()["detail"]
 
 
-def test_reopened_chats_leave_out_tool_calls(settings):
-    store = QdrantClient(path=str(settings.qdrant_path))
-    index_products(store, "tires", products(normalize(raw_frame({}))), FakeEncoder())
-    store.close()
+def test_reopened_chats_show_the_searches_behind_each_answer(settings):
+    index_catalog(settings, {})
     model = ToolCallingModel(messages=iter([tool_call("search_tires", size="205/55R15"), AIMessage(content="Found one.")]))
 
     with TestClient(create_app(settings, model=model, encoder=FakeEncoder())) as client:
-        conversation_id = client.post("/chat", json={"message": "205/55R15 tires?"}).json()["conversation_id"]
-        response = client.get(f"/conversations/{conversation_id}/messages")
+        events = sse_events(client.post("/chat/stream", json={"message": "205/55R15 tires?"}).text)
+        conversation_id = events[0][1]["conversation_id"]
 
-    assert response.json() == [
-        {"role": "user", "content": "205/55R15 tires?"},
-        {"role": "assistant", "content": "Found one."},
-    ]
+    with serve(settings, fake_model("unused")) as client:  # after a restart
+        question, answer = client.get(f"/conversations/{conversation_id}/messages").json()
+
+    assert question == {"role": "user", "content": "205/55R15 tires?", "tool_calls": []}
+    assert answer["content"] == "Found one."
+    [streamed] = [data for name, data in events if name == "tool_call"]
+    assert answer["tool_calls"] == [streamed]
+    assert answer["tool_calls"][0]["result"]["total_matching"] == 1
 
 
 def test_a_chat_whose_first_reply_failed_is_listed_and_can_continue(settings):

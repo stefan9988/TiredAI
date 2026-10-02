@@ -1,6 +1,7 @@
 """The shopping assistant: a LangChain agent on an OpenRouter chat model, with per-thread memory."""
 
 import dataclasses
+import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
@@ -262,14 +263,47 @@ def _describe_result(message: ToolMessage) -> str:
     return describe_results(message.content) if message.name == "search_tires" else f"{message.name} finished"
 
 
+def tool_call_details(call: dict, result: ToolMessage | None) -> dict:
+    """A tool call as the model made it and what it got back, so its answer can be checked against the data.
+
+    {"id", "name", "args": the arguments as sent (their raw text if they could not be parsed),
+     "error": the error the model got instead of a result, or None,
+     "result": the tool's output, parsed if it is JSON (search_tires: the filters as applied, the
+               counts and the products), or None after an error}
+    """
+    args = "" if call["args"] is None else call["args"]
+    details = {"id": call["id"], "name": call["name"] or "unknown", "args": args, "error": None, "result": None}
+    if result is None:
+        details["error"] = "This call has no result."
+        return details
+    try:
+        output = json.loads(result.text)
+    except ValueError:
+        output = result.text
+    if result.status == "error":
+        details["error"] = result.text
+    elif isinstance(output, dict) and "error" in output:
+        details["error"] = str(output["error"])
+    else:
+        details["result"] = output
+    return details
+
+
+def _tool_calls(message: AIMessage) -> list[dict]:
+    """Every call the model made, including those whose arguments could not be parsed."""
+    return [*message.tool_calls, *message.invalid_tool_calls]
+
+
 async def astream_turn(agent: CompiledStateGraph, message: str, thread_id: str) -> AsyncIterator[dict]:
     """One shopper message as a stream of events for the UI.
 
     Yields {"type": "status", "stage": "thinking" | "searching" | "results", "text": ...} as the
-    agent works, and {"type": "token", "text": ...} for each chunk of the answer.
+    agent works, {"type": "tool_call", **tool_call_details} when a tool call has its result, and
+    {"type": "token", "text": ...} for each chunk of the answer.
     """
     yield _status("thinking", "Thinking…")
     answer_text = _AnswerText()
+    calls = {}  # this turn's tool calls by id, to pair with their results
     async for mode, chunk in agent.astream(
         _user_input(message), thread_config(thread_id), stream_mode=["messages", "updates"]
     ):
@@ -284,9 +318,12 @@ async def astream_turn(agent: CompiledStateGraph, message: str, thread_id: str) 
                 if isinstance(item, AIMessage):
                     for call in item.tool_calls:
                         yield _status("searching", _describe_call(call))
+                    calls.update((call["id"], call) for call in _tool_calls(item))
                 elif isinstance(item, ToolMessage):
                     over_limit = node.startswith(ToolCallLimitMiddleware.__name__)
                     yield _status("results", "Search limit reached" if over_limit else _describe_result(item))
+                    call = calls.get(item.tool_call_id) or {"id": item.tool_call_id, "name": item.name, "args": {}}
+                    yield {"type": "tool_call", **tool_call_details(call, item)}
             if messages and isinstance(messages[-1], ToolMessage):
                 yield _status("thinking", "Thinking…")  # the model runs again with the results
 
@@ -301,18 +338,22 @@ async def astream_reply(agent: CompiledStateGraph, message: str, thread_id: str)
 def transcript(messages: Sequence[BaseMessage]) -> list[dict]:
     """The conversation as the shopper saw it: {"role": "user" | "assistant", "content": ...} per message.
 
-    Tool calls and results are left out, and a turn's answer text is joined like the stream sent it.
+    A turn's answer text is joined like the stream sent it, and the answer lists the turn's tool calls
+    under "tool_calls" (see tool_call_details). A turn whose model wrote no text has no answer.
     """
+    results = {m.tool_call_id: m for m in messages if isinstance(m, ToolMessage)}
     turns = []
     for message in messages:
         if isinstance(message, HumanMessage):
             turns.append({"role": "user", "content": message.text})
-        elif isinstance(message, AIMessage) and message.text.strip():
-            if turns and turns[-1]["role"] == "assistant":
-                turns[-1]["content"] += SEGMENT_SEPARATOR + message.text
-            else:
-                turns.append({"role": "assistant", "content": message.text})
-    return turns
+        elif isinstance(message, AIMessage):
+            if not turns or turns[-1]["role"] != "assistant":
+                turns.append({"role": "assistant", "content": "", "tool_calls": []})
+            answer = turns[-1]
+            if message.text.strip():
+                answer["content"] += (SEGMENT_SEPARATOR if answer["content"] else "") + message.text
+            answer["tool_calls"] += [tool_call_details(c, results.get(c["id"])) for c in _tool_calls(message)]
+    return [turn for turn in turns if turn["role"] == "user" or turn["content"]]
 
 
 def recent_turns(messages: Sequence[BaseMessage], max_messages: int) -> list[BaseMessage]:
