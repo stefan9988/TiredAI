@@ -3,10 +3,10 @@ import json
 
 import pytest
 from conftest import FakeEncoder, ToolCallingModel, fake_model, raw_frame, tool_call
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from qdrant_client import QdrantClient
 
-from tiredai.agent import build_agent, build_chat_model, load_system_prompt, stream_reply
+from tiredai.agent import build_agent, build_chat_model, load_system_prompt, stream_reply, transcript
 from tiredai.config import LLMSettings, Settings
 from tiredai.documents import products
 from tiredai.preprocessing import normalize
@@ -131,3 +131,31 @@ def test_agent_answers_from_search_results(settings):
     found = json.loads(result.content)
     assert found["total_matching"] == 1 and found["products"][0]["price"] == 59.93
     client.close()
+
+
+def test_transcript_shows_what_the_shopper_saw():
+    messages = [
+        HumanMessage("205/55R15 under $60?"),
+        AIMessage(content="Let me check. ", tool_calls=[{"name": "search_tires", "args": {}, "id": "call-1"}]),
+        ToolMessage(content='{"total_matching": 1}', tool_call_id="call-1", name="search_tires"),
+        AIMessage(content="One tire fits."),
+        HumanMessage("Thanks"),
+        AIMessage(content="", tool_calls=[{"name": "search_tires", "args": {}, "id": "call-2"}]),
+        ToolMessage(content="{}", tool_call_id="call-2", name="search_tires"),
+        AIMessage(content=[{"type": "reasoning", "reasoning": "hidden"}, {"type": "text", "text": "You're welcome."}]),
+    ]
+
+    assert transcript(messages) == [
+        {"role": "user", "content": "205/55R15 under $60?"},
+        {"role": "assistant", "content": "Let me check. One tire fits."},
+        {"role": "user", "content": "Thanks"},
+        {"role": "assistant", "content": "You're welcome."},
+    ]
+
+
+def test_transcript_keeps_a_turn_that_got_no_answer():
+    assert transcript([HumanMessage("Hi"), HumanMessage("Hello?"), AIMessage(content="Hello.")]) == [
+        {"role": "user", "content": "Hi"},
+        {"role": "user", "content": "Hello?"},
+        {"role": "assistant", "content": "Hello."},
+    ]

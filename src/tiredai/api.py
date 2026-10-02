@@ -1,8 +1,10 @@
 """HTTP API for the tire assistant. Conversation history is stored in SQLite and survives restarts.
 
-    POST /chat          JSON reply
-    POST /chat/stream   the same reply streamed as Server-Sent Events
-    GET  /health        service, model and vector store status
+    POST /chat                          JSON reply
+    POST /chat/stream                   the same reply streamed as Server-Sent Events
+    GET  /conversations                 every chat, most recently active first
+    GET  /conversations/{id}/messages   a chat's messages, to reopen it
+    GET  /health                        service, model and vector store status
     GET  /              chat page (static files in src/tiredai/static)
 
 Run with scripts/serve.py, or: uvicorn tiredai.api:create_app --factory
@@ -24,8 +26,9 @@ from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel, Field, field_validator
 
-from tiredai.agent import astream_reply, astream_turn, build_agent, thread_config
+from tiredai.agent import aget_transcript, astream_reply, astream_turn, build_agent
 from tiredai.config import Settings
+from tiredai.conversations import Conversation, ConversationStore
 from tiredai.embeddings import build_encoder
 from tiredai.search import QueryEncoder, catalog_tools
 from tiredai.vectorstore import connect
@@ -58,6 +61,11 @@ class ChatResponse(BaseModel):
     reply: str
 
 
+class ChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+
+
 class VectorStoreHealth(BaseModel):
     status: Literal["ok", "unavailable"]
     collection: str
@@ -83,7 +91,8 @@ def create_app(
         async with AsyncSqliteSaver.from_conn_string(str(settings.conversations_path)) as checkpointer:
             # Create the history tables now, so an unusable database fails at startup, not on the first chat.
             await checkpointer.setup()
-            app.state.checkpointer = checkpointer
+            app.state.conversations = ConversationStore(checkpointer.conn, checkpointer.lock)
+            await app.state.conversations.setup()
             app.state.vector_store, app.state.vector_store_error = None, None
             try:
                 app.state.vector_store = connect(settings)
@@ -94,6 +103,8 @@ def create_app(
                 app.state.vector_store, settings.qdrant_collection, lambda: encoder or build_encoder(settings)
             )
             app.state.agent = build_agent(settings, model=model, tools=tools, checkpointer=checkpointer)
+            if added := await app.state.conversations.backfill(checkpointer, app.state.agent):
+                logger.info("Added %d earlier conversations to the chat list", added)
             # One turn at a time per conversation, so concurrent requests can't interleave its history.
             app.state.locks = defaultdict(asyncio.Lock)
             try:
@@ -107,7 +118,7 @@ def create_app(
     async def resolve_conversation(body: ChatRequest, request: Request) -> str:
         if body.conversation_id is None:
             return str(uuid.uuid4())
-        if await request.app.state.checkpointer.aget_tuple(thread_config(body.conversation_id)) is None:
+        if await request.app.state.conversations.get(body.conversation_id) is None:
             raise HTTPException(
                 404, f"Unknown conversation {body.conversation_id!r}. Omit conversation_id to start a new one."
             )
@@ -116,6 +127,7 @@ def create_app(
     @app.post("/chat")
     async def chat(body: ChatRequest, request: Request, conversation_id: str = Depends(resolve_conversation)) -> ChatResponse:
         """Send a message and get the whole reply at once."""
+        await request.app.state.conversations.record_turn(conversation_id, body.message)
         async with request.app.state.locks[conversation_id]:
             try:
                 parts = [text async for text in astream_reply(request.app.state.agent, body.message, conversation_id)]
@@ -130,8 +142,10 @@ def create_app(
 
         Events: `start` {conversation_id}; then, as the agent works, `status` {stage, text} (stage is
         thinking, searching or results) and `token` {text} for each chunk of the answer; then `end`
-        {conversation_id, reply}. If the model fails, `error` {message} replaces `end`.
+        {conversation_id, reply}. If the model fails, `error` {message} replaces `end`. The chat is
+        listed by /conversations from `start` on.
         """
+        await request.app.state.conversations.record_turn(conversation_id, body.message)
         yield ServerSentEvent(event="start", data={"conversation_id": conversation_id})
         parts = []
         async with request.app.state.locks[conversation_id]:
@@ -147,6 +161,18 @@ def create_app(
                 yield ServerSentEvent(event="error", data={"message": f"Model request failed: {exc}"})
                 return
         yield ServerSentEvent(event="end", data={"conversation_id": conversation_id, "reply": "".join(parts)})
+
+    @app.get("/conversations")
+    async def conversations(request: Request) -> list[Conversation]:
+        """Every chat, most recently active first. A chat's title is its first message."""
+        return await request.app.state.conversations.list()
+
+    @app.get("/conversations/{conversation_id}/messages", responses={404: {"description": "Unknown conversation"}})
+    async def conversation_messages(conversation_id: str, request: Request) -> list[ChatMessage]:
+        """A chat's messages in order: the shopper's and the assistant's answers (tool calls are left out)."""
+        if await request.app.state.conversations.get(conversation_id) is None:
+            raise HTTPException(404, f"Unknown conversation {conversation_id!r}")
+        return [ChatMessage(**m) for m in await aget_transcript(request.app.state.agent, conversation_id)]
 
     @app.get("/health")
     async def health(request: Request) -> HealthResponse:

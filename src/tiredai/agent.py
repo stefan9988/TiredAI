@@ -5,7 +5,7 @@ from pathlib import Path
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openrouter import ChatOpenRouter
@@ -134,3 +134,25 @@ async def astream_reply(agent: CompiledStateGraph, message: str, thread_id: str)
     async for event in astream_turn(agent, message, thread_id):
         if event["type"] == "token":
             yield event["text"]
+
+
+def transcript(messages: Sequence[BaseMessage]) -> list[dict]:
+    """The conversation as the shopper saw it: {"role": "user" | "assistant", "content": ...} per message.
+
+    Tool calls and results are left out, and a turn's answer text is joined like the stream sent it.
+    """
+    turns = []
+    for message in messages:
+        if isinstance(message, HumanMessage):
+            turns.append({"role": "user", "content": message.text})
+        elif isinstance(message, AIMessage) and message.text:
+            if turns and turns[-1]["role"] == "assistant":
+                turns[-1]["content"] += message.text
+            else:
+                turns.append({"role": "assistant", "content": message.text})
+    return turns
+
+
+async def aget_transcript(agent: CompiledStateGraph, thread_id: str) -> list[dict]:
+    state = await agent.aget_state(thread_config(thread_id))
+    return transcript(state.values.get("messages", []))

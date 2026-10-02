@@ -2,7 +2,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createStatusQueue, errorMessage, parseSSE, renderMarkdown } from "../../src/tiredai/static/lib.mjs";
+import {
+  chatIdFromUrl,
+  chatUrl,
+  createStatusQueue,
+  errorMessage,
+  parseSSE,
+  renderMarkdown,
+} from "../../src/tiredai/static/lib.mjs";
 
 test("model output is escaped, so it cannot inject markup", () => {
   assert.equal(renderMarkdown('<img src=x onerror="alert(1)">'), "<p>&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</p>");
@@ -146,4 +153,13 @@ test("status: a new step after finish shows again", (t) => {
   queue.push(searching); // the model wrote a few words, then decided to search
 
   assert.deepEqual(log, ["Thinking…", "<hidden>", "Searching the catalog: 205/60R15"]);
+});
+
+test("the open chat is kept in the URL", () => {
+  assert.equal(chatUrl(null), "/");
+  assert.equal(chatUrl("3f2a-b9"), "/?c=3f2a-b9");
+  assert.equal(chatIdFromUrl("?c=3f2a-b9"), "3f2a-b9");
+  assert.equal(chatIdFromUrl(""), null);
+  assert.equal(chatIdFromUrl("?c="), null);
+  assert.equal(chatIdFromUrl(new URL(chatUrl("a&b=c d"), "http://x").search), "a&b=c d");
 });

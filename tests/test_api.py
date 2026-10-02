@@ -7,8 +7,10 @@ import pytest
 from conftest import FailingModel, FakeEncoder, ToolCallingModel, fake_model, raw_frame, tool_call
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.checkpoint.sqlite import SqliteSaver
 from qdrant_client import QdrantClient
 
+from tiredai.agent import build_agent, stream_reply
 from tiredai.api import MAX_MESSAGE_CHARS, create_app
 from tiredai.config import Settings
 from tiredai.documents import products
@@ -218,3 +220,97 @@ def test_stream_without_tools_only_reports_thinking(settings):
         events = sse_events(client.post("/chat/stream", json={"message": "What is UTQG?"}).text)
 
     assert [data for name, data in events if name == "status"] == [{"stage": "thinking", "text": "Thinking…"}]
+
+
+def test_chats_are_listed_by_their_first_message(settings):
+    with serve(settings, fake_model("unused")) as client:
+        assert client.get("/conversations").json() == []
+
+    with serve(settings, fake_model("Which size?", "Here are cheaper ones.", "UTQG is a grade.")) as client:
+        first = client.post("/chat", json={"message": "I need\n  winter tires"}).json()["conversation_id"]
+        client.post("/chat", json={"message": "Cheaper please", "conversation_id": first})
+        second = sse_events(client.post("/chat/stream", json={"message": "What is UTQG?"}).text)[0][1]["conversation_id"]
+        listed = client.get("/conversations").json()
+
+    assert [(c["id"], c["title"]) for c in listed] == [(second, "What is UTQG?"), (first, "I need winter tires")]
+    assert listed[1]["created_at"] < listed[1]["updated_at"]
+
+
+def test_continuing_a_chat_moves_it_to_the_top(settings):
+    with serve(settings, fake_model("One.", "Two.", "Three.")) as client:
+        first = client.post("/chat", json={"message": "First"}).json()["conversation_id"]
+        client.post("/chat", json={"message": "Second"})
+        client.post("/chat/stream", json={"message": "Back to the first", "conversation_id": first})
+        listed = client.get("/conversations").json()
+
+    assert [c["title"] for c in listed] == ["First", "Second"]
+
+
+def test_a_chat_can_be_reopened_after_a_restart(settings):
+    with serve(settings, fake_model("Which size?", "Here are cheaper ones.")) as client:
+        conversation_id = client.post("/chat", json={"message": "I need tires"}).json()["conversation_id"]
+        client.post("/chat", json={"message": "Cheaper please", "conversation_id": conversation_id})
+
+    with serve(settings, fake_model("unused")) as client:
+        listed = client.get("/conversations").json()
+        response = client.get(f"/conversations/{conversation_id}/messages")
+
+    assert [c["id"] for c in listed] == [conversation_id]
+    assert response.json() == [
+        {"role": "user", "content": "I need tires"},
+        {"role": "assistant", "content": "Which size?"},
+        {"role": "user", "content": "Cheaper please"},
+        {"role": "assistant", "content": "Here are cheaper ones."},
+    ]
+
+
+def test_messages_of_an_unknown_chat_are_404(settings):
+    with serve(settings, fake_model("unused")) as client:
+        response = client.get("/conversations/does-not-exist/messages")
+
+    assert response.status_code == 404
+    assert "Unknown conversation" in response.json()["detail"]
+
+
+def test_reopened_chats_leave_out_tool_calls(settings):
+    store = QdrantClient(path=str(settings.qdrant_path))
+    index_products(store, "tires", products(normalize(raw_frame({}))), FakeEncoder())
+    store.close()
+    model = ToolCallingModel(messages=iter([tool_call("search_tires", size="205/55R15"), AIMessage(content="Found one.")]))
+
+    with TestClient(create_app(settings, model=model, encoder=FakeEncoder())) as client:
+        conversation_id = client.post("/chat", json={"message": "205/55R15 tires?"}).json()["conversation_id"]
+        response = client.get(f"/conversations/{conversation_id}/messages")
+
+    assert response.json() == [
+        {"role": "user", "content": "205/55R15 tires?"},
+        {"role": "assistant", "content": "Found one."},
+    ]
+
+
+def test_a_chat_whose_first_reply_failed_is_listed_and_can_continue(settings):
+    with serve(settings, FailingModel(messages=iter([]))) as client:
+        conversation_id = sse_events(client.post("/chat/stream", json={"message": "Hi"}).text)[0][1]["conversation_id"]
+
+    with serve(settings, fake_model("Hello.")) as client:
+        assert [c["title"] for c in client.get("/conversations").json()] == ["Hi"]
+        response = client.post("/chat", json={"message": "Hello?", "conversation_id": conversation_id})
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "Hello."
+
+
+def test_chats_from_before_titles_existed_are_listed(settings):
+    # History written by the agent alone, like the API did before it kept a chat list.
+    with SqliteSaver.from_conn_string(str(settings.conversations_path)) as checkpointer:
+        agent = build_agent(settings, model=fake_model("Which size?", "Noted."), checkpointer=checkpointer)
+        list(stream_reply(agent, "I need tires", "old-chat"))
+        list(stream_reply(agent, "205/55R16", "old-chat"))
+
+    with serve(settings, fake_model("unused")) as client:
+        [listed] = client.get("/conversations").json()
+        messages = client.get("/conversations/old-chat/messages").json()
+
+    assert (listed["id"], listed["title"]) == ("old-chat", "I need tires")
+    assert listed["created_at"] < listed["updated_at"]
+    assert [m["content"] for m in messages] == ["I need tires", "Which size?", "205/55R16", "Noted."]

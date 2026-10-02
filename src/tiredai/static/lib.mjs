@@ -137,3 +137,12 @@ export function createStatusQueue({ show, hide, minMs = 700 }) {
     },
   };
 }
+
+// The open chat lives in the page URL (/?c=<id>), so reloading or sharing the link reopens it.
+export function chatUrl(conversationId) {
+  return conversationId ? `/?c=${encodeURIComponent(conversationId)}` : "/";
+}
+
+export function chatIdFromUrl(search) {
+  return new URLSearchParams(search).get("c") || null;
+}

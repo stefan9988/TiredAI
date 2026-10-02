@@ -33,6 +33,15 @@ def test_chat_page_is_served_at_the_root(client):
     assert response.headers["content-type"].startswith("text/html")
     assert "<title>TiredAI</title>" in response.text
     assert '<script type="module" src="/static/app.js">' in response.text
+    assert 'id="new-chat"' in response.text and 'id="chats"' in response.text
+
+
+def test_a_chat_link_serves_the_chat_page(client):
+    # The open chat is kept in the URL; the page loads it from /conversations.
+    response = client.get("/?c=some-conversation")
+
+    assert response.status_code == 200
+    assert "<title>TiredAI</title>" in response.text
 
 
 @pytest.mark.parametrize("path, media_type", [("app.js", "text/javascript"), ("lib.mjs", "text/javascript"), ("style.css", "text/css")])
