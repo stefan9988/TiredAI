@@ -7,7 +7,10 @@ authors = [
     { name = "stefan dragicevic", email = "stefand998@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "pandas>=3.0.6",
+    "pyarrow>=25.0.1",
+]
 
 [project.scripts]
 tiredai = "tiredai:main"
