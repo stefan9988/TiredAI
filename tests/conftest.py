@@ -1,10 +1,12 @@
+import json
 import zlib
 from collections import Counter
 
 import pandas as pd
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, AIMessageChunk
+from langchain_core.outputs import ChatGenerationChunk
 from pydantic import Field
 from qdrant_client import models
 
@@ -70,6 +72,26 @@ def fake_model(*replies: str) -> RecordingModel:
     return RecordingModel(messages=iter(AIMessage(content=r) for r in replies))
 
 
+class ToolCallingModel(RecordingModel):
+    """Scripted model that can also call tools, like a real chat model bound to tools."""
+
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+    def _stream(self, messages, *args, **kwargs):
+        self.prompts.append(messages)
+        message = next(self.messages)
+        chunks = [
+            {"name": c["name"], "args": json.dumps(c["args"]), "id": c["id"], "index": i, "type": "tool_call_chunk"}
+            for i, c in enumerate(message.tool_calls)
+        ]
+        yield ChatGenerationChunk(message=AIMessageChunk(content=message.content, tool_call_chunks=chunks))
+
+
+def tool_call(name: str, **args) -> AIMessage:
+    return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": f"call-{name}"}])
+
+
 class FakeEncoder:
     """Deterministic, offline stand-in for the embedding models: vectors come from hashed lowercase tokens."""
 
@@ -77,6 +99,9 @@ class FakeEncoder:
 
     def encode_documents(self, texts):
         return [self.dense(t) for t in texts], [self.sparse(t) for t in texts]
+
+    def encode_query(self, text):
+        return self.dense(text), self.sparse(text)
 
     def dense(self, text):
         vector = [0.0] * self.dense_dim

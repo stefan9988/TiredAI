@@ -1,11 +1,17 @@
 import dataclasses
+import json
 
 import pytest
-from conftest import fake_model
-from langchain_core.messages import SystemMessage
+from conftest import FakeEncoder, ToolCallingModel, fake_model, raw_frame, tool_call
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from qdrant_client import QdrantClient
 
 from tiredai.agent import build_agent, build_chat_model, load_system_prompt, stream_reply
 from tiredai.config import LLMSettings, Settings
+from tiredai.documents import products
+from tiredai.preprocessing import normalize
+from tiredai.search import CatalogSearch, make_search_tool
+from tiredai.vectorstore import index_products
 
 
 @pytest.fixture
@@ -107,3 +113,21 @@ def test_unset_parameters_are_not_sent():
 def test_chat_model_requires_an_api_key():
     with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
         build_chat_model(LLMSettings.from_env({}), None)
+
+
+def test_agent_answers_from_search_results(settings):
+    client = QdrantClient(":memory:")
+    index_products(client, "tires", products(normalize(raw_frame({}))), FakeEncoder())
+    tool = make_search_tool(CatalogSearch(client, "tires", FakeEncoder()))
+    model = ToolCallingModel(
+        messages=iter([tool_call("search_tires", size="205/55R15"), AIMessage(content="The Accelera Phi-R is $59.93.")])
+    )
+    agent = build_agent(settings, model=model, tools=[tool])
+
+    reply = "".join(stream_reply(agent, "Tires in 205/55R15?", "thread-1"))
+
+    assert reply == "The Accelera Phi-R is $59.93."
+    [result] = [m for m in model.prompts[1] if isinstance(m, ToolMessage)]
+    found = json.loads(result.content)
+    assert found["total_matching"] == 1 and found["products"][0]["price"] == 59.93
+    client.close()

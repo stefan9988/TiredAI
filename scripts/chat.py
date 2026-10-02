@@ -13,6 +13,9 @@ import uuid
 
 from tiredai.agent import build_agent, stream_reply
 from tiredai.config import Settings
+from tiredai.embeddings import build_encoder
+from tiredai.search import catalog_tools
+from tiredai.vectorstore import connect
 
 
 def ask(agent, message: str, thread_id: str) -> None:
@@ -32,7 +35,15 @@ def main() -> None:
 
     settings = Settings.load()
     try:
-        agent = build_agent(settings)
+        client = connect(settings)
+    except Exception as exc:  # e.g. the API server has the local store open
+        client = None
+        print(f"[warning] Catalog unavailable, answering without product search: {exc}", file=sys.stderr)
+    try:
+        tools = catalog_tools(client, settings.qdrant_collection, lambda: build_encoder(settings))
+        if client is not None and not tools:
+            print("[warning] No index found; run scripts/build_index.py for product search.", file=sys.stderr)
+        agent = build_agent(settings, tools=tools)
     except (ValueError, FileNotFoundError) as exc:
         sys.exit(str(exc))
 

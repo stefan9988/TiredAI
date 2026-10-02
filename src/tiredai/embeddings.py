@@ -2,6 +2,7 @@
 
 import hashlib
 import sqlite3
+import threading
 import time
 from collections.abc import Callable
 from itertools import batched
@@ -44,12 +45,14 @@ class FastEmbedDense:
 class EmbeddingCache:
     """Vectors already fetched from a remote model, kept on disk so rebuilds don't spend API requests.
 
-    Stored as float32, the precision Qdrant keeps anyway.
+    Stored as float32, the precision Qdrant keeps anyway. Safe to use from several threads: the agent
+    runs tools in worker threads.
     """
 
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(path)
+        self._db = sqlite3.connect(path, check_same_thread=False)
+        self._lock = threading.Lock()
         self._db.execute("CREATE TABLE IF NOT EXISTS embeddings (key TEXT PRIMARY KEY, vector BLOB NOT NULL)")
 
     @staticmethod
@@ -58,15 +61,16 @@ class EmbeddingCache:
 
     def get_many(self, keys: list[str]) -> dict[str, list[float]]:
         found = {}
-        for chunk in batched(keys, 500):  # stay below SQLite's limit on query parameters
-            rows = self._db.execute(
-                f"SELECT key, vector FROM embeddings WHERE key IN ({','.join('?' * len(chunk))})", chunk
-            )
-            found.update({key: np.frombuffer(blob, dtype=np.float32).tolist() for key, blob in rows})
+        with self._lock:
+            for chunk in batched(keys, 500):  # stay below SQLite's limit on query parameters
+                rows = self._db.execute(
+                    f"SELECT key, vector FROM embeddings WHERE key IN ({','.join('?' * len(chunk))})", chunk
+                ).fetchall()
+                found.update({key: np.frombuffer(blob, dtype=np.float32).tolist() for key, blob in rows})
         return found
 
     def put_many(self, vectors: dict[str, list[float]]) -> None:
-        with self._db:
+        with self._lock, self._db:
             self._db.executemany(
                 "INSERT OR REPLACE INTO embeddings VALUES (?, ?)",
                 [(key, np.asarray(vector, dtype=np.float32).tobytes()) for key, vector in vectors.items()],

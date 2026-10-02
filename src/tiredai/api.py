@@ -22,6 +22,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from tiredai.agent import astream_reply, build_agent, thread_config
 from tiredai.config import Settings
+from tiredai.embeddings import build_encoder
+from tiredai.search import QueryEncoder, catalog_tools
 from tiredai.vectorstore import connect
 
 logger = logging.getLogger(__name__)
@@ -64,8 +66,10 @@ class HealthResponse(BaseModel):
     vector_store: VectorStoreHealth
 
 
-def create_app(settings: Settings | None = None, *, model: BaseChatModel | None = None) -> FastAPI:
-    """Build the app; `model` replaces the configured OpenRouter model (used by tests)."""
+def create_app(
+    settings: Settings | None = None, *, model: BaseChatModel | None = None, encoder: QueryEncoder | None = None
+) -> FastAPI:
+    """Build the app; `model` and `encoder` replace the configured models (used by tests)."""
     settings = settings or Settings.load()
 
     @asynccontextmanager
@@ -75,14 +79,18 @@ def create_app(settings: Settings | None = None, *, model: BaseChatModel | None 
             # Create the history tables now, so an unusable database fails at startup, not on the first chat.
             await checkpointer.setup()
             app.state.checkpointer = checkpointer
-            app.state.agent = build_agent(settings, model=model, checkpointer=checkpointer)
-            # One turn at a time per conversation, so concurrent requests can't interleave its history.
-            app.state.locks = defaultdict(asyncio.Lock)
             app.state.vector_store, app.state.vector_store_error = None, None
             try:
                 app.state.vector_store = connect(settings)
             except Exception as exc:  # e.g. the local store is locked by a running build_index.py
                 app.state.vector_store_error = str(exc)
+            # Without an index the agent has no search tool; /health reports why.
+            tools = catalog_tools(
+                app.state.vector_store, settings.qdrant_collection, lambda: encoder or build_encoder(settings)
+            )
+            app.state.agent = build_agent(settings, model=model, tools=tools, checkpointer=checkpointer)
+            # One turn at a time per conversation, so concurrent requests can't interleave its history.
+            app.state.locks = defaultdict(asyncio.Lock)
             try:
                 yield
             finally:

@@ -1,5 +1,6 @@
 import dataclasses
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -123,3 +124,13 @@ def test_openrouter_provider_requires_an_api_key():
 def test_unknown_provider_is_rejected():
     with pytest.raises(ValueError, match="EMBEDDING_PROVIDER"):
         build_dense(dataclasses.replace(Settings.load(), embedding_provider="pinecone"))
+
+
+def test_cache_can_be_used_from_other_threads(api, cache):
+    # The agent runs tools in worker threads, so query embeddings are cached from those threads.
+    dense = embedder(api, cache)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        vectors = list(pool.map(dense.embed_query, ["a", "b", "a", "c"]))
+
+    assert vectors[0] == vectors[2]
+    assert len(api.requests) <= 4

@@ -4,8 +4,9 @@ import sqlite3
 import uuid
 
 import pytest
-from conftest import FailingModel, FakeEncoder, fake_model, raw_frame
+from conftest import FailingModel, FakeEncoder, ToolCallingModel, fake_model, raw_frame, tool_call
 from fastapi.testclient import TestClient
+from langchain_core.messages import AIMessage, ToolMessage
 from qdrant_client import QdrantClient
 
 from tiredai.api import MAX_MESSAGE_CHARS, create_app
@@ -179,3 +180,17 @@ def test_health_reports_the_indexed_products(settings):
 
     assert body["status"] == "ok"
     assert body["vector_store"] == {"status": "ok", "collection": "tires", "points": 2, "detail": None}
+
+
+def test_agent_gets_the_search_tool_when_the_index_exists(settings):
+    store = QdrantClient(path=str(settings.qdrant_path))
+    index_products(store, "tires", products(normalize(raw_frame({}))), FakeEncoder())
+    store.close()
+    model = ToolCallingModel(messages=iter([tool_call("search_tires", size="205/55R15"), AIMessage(content="Found one.")]))
+
+    with TestClient(create_app(settings, model=model, encoder=FakeEncoder())) as client:
+        response = client.post("/chat", json={"message": "205/55R15 tires?"})
+
+    assert response.json()["reply"] == "Found one."
+    [result] = [m for m in model.prompts[1] if isinstance(m, ToolMessage)]
+    assert json.loads(result.content)["total_matching"] == 1
