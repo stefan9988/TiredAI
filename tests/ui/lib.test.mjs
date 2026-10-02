@@ -34,6 +34,12 @@ test("bulleted, numbered and nested lists", () => {
   );
 });
 
+test("rules separate the text before and after a search", () => {
+  assert.equal(renderMarkdown("Let me check.\n\n---\n\nOne tire fits."), "<p>Let me check.</p><hr><p>One tire fits.</p>");
+  assert.equal(renderMarkdown("- TBB\n***\n_ _ _\nDone."), "<ul><li>TBB</li></ul><hr><hr><p>Done.</p>");
+  assert.equal(renderMarkdown("-- not a rule"), "<p>-- not a rule</p>");
+});
+
 test("headings", () => {
   assert.equal(renderMarkdown("## Best value\nLaufenn"), "<h3>Best value</h3><p>Laufenn</p>");
 });

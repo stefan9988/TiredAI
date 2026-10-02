@@ -19,7 +19,8 @@ function tableRow(line, cell) {
   return `<tr>${cells.map((c) => `<${cell}>${inline(c.trim())}</${cell}>`).join("")}</tr>`;
 }
 
-// The small subset of Markdown the assistant uses: paragraphs, headings, lists, tables, inline styles.
+// The small subset of Markdown the assistant uses: paragraphs, headings, lists, tables, rules
+// (`---`, which also separates the text written before and after a tool call), inline styles.
 // All text is HTML-escaped before formatting, so model output can never inject markup.
 export function renderMarkdown(text) {
   const lines = text.replace(/\r\n/g, "\n").trim().split("\n");
@@ -48,6 +49,10 @@ export function renderMarkdown(text) {
       for (i += 2; i < lines.length && lines[i].trim().startsWith("|"); i++) rows.push(tableRow(lines[i], "td"));
       i--;
       html.push(`<table>${rows.join("")}</tbody></table>`);
+    } else if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
+      flushParagraph();
+      closeList();
+      html.push("<hr>");
     } else if (item) {
       flushParagraph();
       const type = item[2] ? "ul" : "ol";

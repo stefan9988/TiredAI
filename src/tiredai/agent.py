@@ -76,17 +76,36 @@ def _user_input(message: str) -> dict:
     return {"messages": [{"role": "user", "content": message}]}
 
 
-def _answer_text(chunk: object, metadata: dict) -> str:
-    # Only answer text from the model: tool results and reasoning blocks are not shown.
-    if isinstance(chunk, AIMessageChunk) and metadata.get("langgraph_node") == "model":
-        return chunk.text
-    return ""
+# Text the model writes before and after a tool call is kept apart by a Markdown rule.
+SEGMENT_SEPARATOR = "\n\n---\n\n"
+
+
+class _AnswerText:
+    """Picks the answer text out of one turn's streamed chunks.
+
+    Only text from the model is shown: tool results and reasoning blocks are not. Text from a later
+    model step (after a tool call) starts with SEGMENT_SEPARATOR, unless the earlier steps wrote only
+    whitespace.
+    """
+
+    def __init__(self):
+        self.step = None  # the model step that last wrote visible text
+
+    def __call__(self, chunk: object, metadata: dict) -> str:
+        if not (isinstance(chunk, AIMessageChunk) and metadata.get("langgraph_node") == "model"):
+            return ""
+        text = chunk.text
+        if not text.strip():
+            return text
+        previous, self.step = self.step, metadata.get("langgraph_step")
+        return SEGMENT_SEPARATOR + text if previous not in (None, self.step) else text
 
 
 def stream_reply(agent: CompiledStateGraph, message: str, thread_id: str) -> Iterator[str]:
     """Send one shopper message and yield the assistant's answer text as it is generated."""
+    answer_text = _AnswerText()
     for chunk, metadata in agent.stream(_user_input(message), thread_config(thread_id), stream_mode="messages"):
-        if text := _answer_text(chunk, metadata):
+        if text := answer_text(chunk, metadata):
             yield text
 
 
@@ -109,11 +128,12 @@ async def astream_turn(agent: CompiledStateGraph, message: str, thread_id: str) 
     agent works, and {"type": "token", "text": ...} for each chunk of the answer.
     """
     yield _status("thinking", "Thinking…")
+    answer_text = _AnswerText()
     async for mode, chunk in agent.astream(
         _user_input(message), thread_config(thread_id), stream_mode=["messages", "updates"]
     ):
         if mode == "messages":
-            if text := _answer_text(*chunk):
+            if text := answer_text(*chunk):
                 yield {"type": "token", "text": text}
             continue
         # "updates" carry each finished step: model steps with complete tool calls, then tool results.
@@ -145,9 +165,9 @@ def transcript(messages: Sequence[BaseMessage]) -> list[dict]:
     for message in messages:
         if isinstance(message, HumanMessage):
             turns.append({"role": "user", "content": message.text})
-        elif isinstance(message, AIMessage) and message.text:
+        elif isinstance(message, AIMessage) and message.text.strip():
             if turns and turns[-1]["role"] == "assistant":
-                turns[-1]["content"] += message.text
+                turns[-1]["content"] += SEGMENT_SEPARATOR + message.text
             else:
                 turns.append({"role": "assistant", "content": message.text})
     return turns

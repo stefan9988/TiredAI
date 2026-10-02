@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 from qdrant_client import QdrantClient
 
-from tiredai.agent import build_agent, stream_reply
+from tiredai.agent import SEGMENT_SEPARATOR, build_agent, stream_reply
 from tiredai.api import MAX_MESSAGE_CHARS, create_app
 from tiredai.config import Settings
 from tiredai.documents import products
@@ -213,6 +213,26 @@ def test_stream_reports_status_while_searching(settings):
     assert statuses == ["Thinking…", "Searching the catalog: 205/55R15 · up to $60", "Found 1 tire", "Thinking…"]
     assert [name for name, _ in events if name != "status"] == ["start", "token", "end"]
     assert events[-1][1]["reply"] == "One tire fits."
+
+
+def test_answer_text_around_a_search_is_separated(settings):
+    store = QdrantClient(path=str(settings.qdrant_path))
+    index_products(store, "tires", products(normalize(raw_frame({}))), FakeEncoder())
+    store.close()
+    search = {"name": "search_tires", "args": {"size": "205/55R15"}, "id": "call-1"}
+    model = ToolCallingModel(
+        messages=iter([AIMessage(content="Let me check.", tool_calls=[search]), AIMessage(content="One tire fits.")])
+    )
+
+    with TestClient(create_app(settings, model=model, encoder=FakeEncoder())) as client:
+        events = sse_events(client.post("/chat/stream", json={"message": "205/55R15?"}).text)
+        conversation_id = events[0][1]["conversation_id"]
+        saved = client.get(f"/conversations/{conversation_id}/messages").json()
+
+    expected = "Let me check." + SEGMENT_SEPARATOR + "One tire fits."
+    assert "".join(data["text"] for name, data in events if name == "token") == expected
+    assert events[-1][1]["reply"] == expected
+    assert saved[1] == {"role": "assistant", "content": expected}
 
 
 def test_stream_without_tools_only_reports_thinking(settings):

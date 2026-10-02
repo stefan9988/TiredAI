@@ -6,7 +6,15 @@ from conftest import FakeEncoder, ToolCallingModel, fake_model, raw_frame, tool_
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from qdrant_client import QdrantClient
 
-from tiredai.agent import build_agent, build_chat_model, load_system_prompt, stream_reply, transcript
+from tiredai.agent import (
+    SEGMENT_SEPARATOR,
+    build_agent,
+    build_chat_model,
+    load_system_prompt,
+    stream_reply,
+    thread_config,
+    transcript,
+)
 from tiredai.config import LLMSettings, Settings
 from tiredai.documents import products
 from tiredai.preprocessing import normalize
@@ -133,6 +141,35 @@ def test_agent_answers_from_search_results(settings):
     client.close()
 
 
+def test_text_before_and_after_a_tool_call_is_separated(settings):
+    client = QdrantClient(":memory:")
+    index_products(client, "tires", products(normalize(raw_frame({}))), FakeEncoder())
+    tool = make_search_tool(CatalogSearch(client, "tires", FakeEncoder()))
+    first_search = {"name": "search_tires", "args": {"size": "205/55R15"}, "id": "call-1"}
+    model = ToolCallingModel(
+        messages=iter(
+            [
+                AIMessage(content="Let me check.", tool_calls=[first_search]),
+                tool_call("search_tires", size="205/55R16"),  # a step without text adds no separator
+                AIMessage(content="One tire fits."),
+                # Some models write only whitespace before a tool call: no separator for that.
+                AIMessage(content="\n\n", tool_calls=[{**first_search, "id": "call-2"}]),
+                AIMessage(content="You're welcome."),
+            ]
+        )
+    )
+    agent = build_agent(settings, model=model, tools=[tool])
+
+    reply = "".join(stream_reply(agent, "Tires in 205/55R15?", "thread-1"))
+    next_reply = "".join(stream_reply(agent, "Thanks", "thread-1"))
+
+    assert reply == "Let me check." + SEGMENT_SEPARATOR + "One tire fits."
+    assert next_reply == "\n\nYou're welcome."
+    saved = transcript(agent.get_state(thread_config("thread-1")).values["messages"])
+    assert [m["content"] for m in saved if m["role"] == "assistant"] == [reply, "You're welcome."]
+    client.close()
+
+
 def test_transcript_shows_what_the_shopper_saw():
     messages = [
         HumanMessage("205/55R15 under $60?"),
@@ -140,14 +177,14 @@ def test_transcript_shows_what_the_shopper_saw():
         ToolMessage(content='{"total_matching": 1}', tool_call_id="call-1", name="search_tires"),
         AIMessage(content="One tire fits."),
         HumanMessage("Thanks"),
-        AIMessage(content="", tool_calls=[{"name": "search_tires", "args": {}, "id": "call-2"}]),
+        AIMessage(content="\n\n", tool_calls=[{"name": "search_tires", "args": {}, "id": "call-2"}]),
         ToolMessage(content="{}", tool_call_id="call-2", name="search_tires"),
         AIMessage(content=[{"type": "reasoning", "reasoning": "hidden"}, {"type": "text", "text": "You're welcome."}]),
     ]
 
     assert transcript(messages) == [
         {"role": "user", "content": "205/55R15 under $60?"},
-        {"role": "assistant", "content": "Let me check. One tire fits."},
+        {"role": "assistant", "content": "Let me check. " + SEGMENT_SEPARATOR + "One tire fits."},
         {"role": "user", "content": "Thanks"},
         {"role": "assistant", "content": "You're welcome."},
     ]

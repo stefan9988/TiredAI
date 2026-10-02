@@ -303,6 +303,12 @@ body {
   list-style-type: circle;
 }
 
+.answer hr {
+  margin: 16px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
 .answer h3 {
   margin: 14px 0 6px;
   font-size: 15px;
