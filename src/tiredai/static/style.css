@@ -1,0 +1,296 @@
+:root {
+  --bg: #ffffff;
+  --surface: #f4f5f7;
+  --border: #e3e5e8;
+  --text: #1c1e21;
+  --muted: #6b7178;
+  --accent: #2f6fdf;
+  --accent-text: #ffffff;
+  --error: #c62828;
+  --warn: #b26a00;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171a;
+    --surface: #202328;
+    --border: #2e3238;
+    --text: #e8eaed;
+    --muted: #9aa0a6;
+    --accent: #5b8ef0;
+    --accent-text: #ffffff;
+    --error: #ef6b6b;
+    --warn: #e0a040;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand strong {
+  font-size: 16px;
+}
+
+.brand span {
+  margin-left: 8px;
+  color: var(--muted);
+}
+
+.meta {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: right;
+}
+
+.meta.warn {
+  color: var(--warn);
+}
+
+#messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 16px;
+}
+
+#messages > * {
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.empty {
+  margin-top: 12vh;
+  text-align: center;
+}
+
+.empty h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.empty p {
+  margin: 0 0 20px;
+  color: var(--muted);
+}
+
+.examples {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.example {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.example:hover {
+  border-color: var(--accent);
+}
+
+.message {
+  margin-bottom: 20px;
+}
+
+.message.user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.bubble {
+  max-width: 80%;
+  padding: 10px 14px;
+  border-radius: 16px 16px 4px 16px;
+  background: var(--accent);
+  color: var(--accent-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.status[hidden] {
+  display: none;
+}
+
+.status::before {
+  content: "";
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.status.enter {
+  animation: fade-in 0.2s ease-out;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+}
+
+.answer {
+  overflow-wrap: anywhere;
+}
+
+.answer > :first-child {
+  margin-top: 0;
+}
+
+.answer p,
+.answer ul,
+.answer ol,
+.answer table {
+  margin: 0 0 10px;
+}
+
+.answer ul,
+.answer ol {
+  padding-left: 22px;
+}
+
+.answer li.sub {
+  margin-left: 18px;
+  list-style-type: circle;
+}
+
+.answer h3 {
+  margin: 14px 0 6px;
+  font-size: 15px;
+}
+
+.answer code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.answer table {
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.answer th,
+.answer td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.answer th {
+  background: var(--surface);
+}
+
+.error {
+  color: var(--error);
+}
+
+.bottom {
+  padding: 12px 16px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.composer textarea {
+  flex: 1;
+  min-height: 44px;
+  max-height: 200px;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  resize: none;
+}
+
+.composer textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.composer button {
+  height: 44px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.composer button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.hint {
+  max-width: 760px;
+  margin: 6px auto 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}

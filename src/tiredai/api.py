@@ -3,6 +3,7 @@
     POST /chat          JSON reply
     POST /chat/stream   the same reply streamed as Server-Sent Events
     GET  /health        service, model and vector store status
+    GET  /              chat page (static files in src/tiredai/static)
 
 Run with scripts/serve.py, or: uvicorn tiredai.api:create_app --factory
 """
@@ -12,15 +13,18 @@ import logging
 import uuid
 from collections import defaultdict
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.sse import EventSourceResponse, ServerSentEvent
 from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel, Field, field_validator
 
-from tiredai.agent import astream_reply, build_agent, thread_config
+from tiredai.agent import astream_reply, astream_turn, build_agent, thread_config
 from tiredai.config import Settings
 from tiredai.embeddings import build_encoder
 from tiredai.search import QueryEncoder, catalog_tools
@@ -29,6 +33,7 @@ from tiredai.vectorstore import connect
 logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_CHARS = 4000
+STATIC_DIR = Path(__file__).parent / "static"
 
 
 class ChatRequest(BaseModel):
@@ -123,16 +128,20 @@ def create_app(
     async def chat_stream(body: ChatRequest, request: Request, conversation_id: str = Depends(resolve_conversation)):
         """Send a message and receive the reply as Server-Sent Events.
 
-        Events: `start` {conversation_id}, then `token` {text} for each chunk, then `end`
+        Events: `start` {conversation_id}; then, as the agent works, `status` {stage, text} (stage is
+        thinking, searching or results) and `token` {text} for each chunk of the answer; then `end`
         {conversation_id, reply}. If the model fails, `error` {message} replaces `end`.
         """
         yield ServerSentEvent(event="start", data={"conversation_id": conversation_id})
         parts = []
         async with request.app.state.locks[conversation_id]:
             try:
-                async for text in astream_reply(request.app.state.agent, body.message, conversation_id):
-                    parts.append(text)
-                    yield ServerSentEvent(event="token", data={"text": text})
+                async for event in astream_turn(request.app.state.agent, body.message, conversation_id):
+                    if event["type"] == "token":
+                        parts.append(event["text"])
+                        yield ServerSentEvent(event="token", data={"text": event["text"]})
+                    else:
+                        yield ServerSentEvent(event="status", data={"stage": event["stage"], "text": event["text"]})
             except Exception as exc:
                 logger.exception("Model request failed")
                 yield ServerSentEvent(event="error", data={"message": f"Model request failed: {exc}"})
@@ -147,6 +156,12 @@ def create_app(
             model=settings.llm.model,
             vector_store=vector_store,
         )
+
+    @app.get("/", include_in_schema=False)
+    async def chat_page() -> FileResponse:
+        return FileResponse(STATIC_DIR / "index.html")
+
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     def vector_store_health(client, error: str | None) -> VectorStoreHealth:
         collection = settings.qdrant_collection

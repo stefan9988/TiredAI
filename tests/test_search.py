@@ -7,7 +7,15 @@ from qdrant_client import QdrantClient
 from tiredai.documents import products
 from tiredai.embeddings import EmbeddingError
 from tiredai.preprocessing import normalize
-from tiredai.search import CatalogSearch, catalog_tools, make_search_tool, parse_size, speed_rank
+from tiredai.search import (
+    CatalogSearch,
+    catalog_tools,
+    describe_results,
+    describe_search,
+    make_search_tool,
+    parse_size,
+    speed_rank,
+)
 from tiredai.vectorstore import index_products
 
 PASSENGER = {"carType": "Passenger", "season": "All Season", "performance": "Touring", "runFlat": "false"}
@@ -209,3 +217,34 @@ def test_no_tool_without_an_index():
 
     assert catalog_tools(client, "tires", factory) == []
     assert catalog_tools(None, "tires", factory) == []
+
+
+@pytest.mark.parametrize(
+    "args, text",
+    [
+        ({}, "Searching the catalog"),
+        ({"size": "205/60R15", "season": "All Season", "max_price": 60}, "Searching the catalog: 205/60R15 · All Season · up to $60"),
+        ({"query": "Eagle F1", "brand": "Goodyear", "size": "255/50R19"}, 'Searching the catalog: 255/50R19 · "Eagle F1" · Goodyear'),
+        ({"min_price": "50", "max_price": 99.5}, "Searching the catalog: $50–$99.50"),
+        ({"min_price": 100}, "Searching the catalog: from $100"),
+        ({"run_flat": True, "min_speed_rating": "H", "sort": "price_asc"}, "Searching the catalog: run-flat · speed rating H or higher · cheapest first"),
+        ({"run_flat": "false", "car_type": "Truck/SUV", "sort": "price_desc"}, "Searching the catalog: Truck/SUV · no run-flat · most expensive first"),
+    ],
+)
+def test_search_is_described_for_the_status_line(args, text):
+    assert describe_search(args) == text
+
+
+@pytest.mark.parametrize(
+    "content, text",
+    [
+        ('{"total_matching": 6, "products": []}', "Found 6 tires"),
+        ('{"total_matching": 1, "products": []}', "Found 1 tire"),
+        ('{"total_matching": 1250, "products": []}', "Found 1,250 tires"),
+        ('{"total_matching": 0, "products": []}', "No tires match"),
+        ('{"error": "Size \'1/2R3\' is not in the catalog."}', "Search problem: Size '1/2R3' is not in the catalog."),
+        ("Error invoking tool: invalid arguments", "The search failed"),
+    ],
+)
+def test_search_result_is_described_for_the_status_line(content, text):
+    assert describe_results(content) == text

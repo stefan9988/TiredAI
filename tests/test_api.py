@@ -127,8 +127,8 @@ def test_stream_sends_start_tokens_and_end(settings):
     assert response.headers["content-type"].startswith("text/event-stream")
     events = sse_events(response.text)
     names = [name for name, _ in events]
-    assert names[0] == "start" and names[-1] == "end" and set(names[1:-1]) == {"token"}
-    assert len(names) > 3
+    assert names[:2] == ["start", "status"] and names[-1] == "end" and set(names[2:-1]) == {"token"}
+    assert len(names) > 4
     conversation_id = events[0][1]["conversation_id"]
     reply = "".join(data["text"] for name, data in events if name == "token")
     assert reply == "All season tires work year round."
@@ -156,8 +156,8 @@ def test_model_failure_while_streaming_sends_an_error_event(settings):
     with serve(settings, FailingModel(messages=iter([]))) as client:
         events = sse_events(client.post("/chat/stream", json={"message": "Hi"}).text)
 
-    assert [name for name, _ in events] == ["start", "error"]
-    assert "provider unavailable" in events[1][1]["message"]
+    assert [name for name, _ in events] == ["start", "status", "error"]
+    assert "provider unavailable" in events[-1][1]["message"]
 
 
 def test_health_reports_a_missing_index(settings):
@@ -194,3 +194,27 @@ def test_agent_gets_the_search_tool_when_the_index_exists(settings):
     assert response.json()["reply"] == "Found one."
     [result] = [m for m in model.prompts[1] if isinstance(m, ToolMessage)]
     assert json.loads(result.content)["total_matching"] == 1
+
+
+def test_stream_reports_status_while_searching(settings):
+    store = QdrantClient(path=str(settings.qdrant_path))
+    index_products(store, "tires", products(normalize(raw_frame({}))), FakeEncoder())
+    store.close()
+    model = ToolCallingModel(
+        messages=iter([tool_call("search_tires", size="205/55R15", max_price=60), AIMessage(content="One tire fits.")])
+    )
+
+    with TestClient(create_app(settings, model=model, encoder=FakeEncoder())) as client:
+        events = sse_events(client.post("/chat/stream", json={"message": "205/55R15 under $60?"}).text)
+
+    statuses = [data["text"] for name, data in events if name == "status"]
+    assert statuses == ["Thinking…", "Searching the catalog: 205/55R15 · up to $60", "Found 1 tire", "Thinking…"]
+    assert [name for name, _ in events if name != "status"] == ["start", "token", "end"]
+    assert events[-1][1]["reply"] == "One tire fits."
+
+
+def test_stream_without_tools_only_reports_thinking(settings):
+    with serve(settings, fake_model("UTQG is a grading system.")) as client:
+        events = sse_events(client.post("/chat/stream", json={"message": "What is UTQG?"}).text)
+
+    assert [data for name, data in events if name == "status"] == [{"stage": "thinking", "text": "Thinking…"}]

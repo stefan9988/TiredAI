@@ -5,7 +5,7 @@ from pathlib import Path
 
 from langchain.agents import create_agent
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openrouter import ChatOpenRouter
@@ -14,6 +14,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
 from tiredai.config import LLMSettings, Settings
+from tiredai.search import describe_results, describe_search
 
 APP_TITLE = "TiredAI"
 
@@ -89,10 +90,47 @@ def stream_reply(agent: CompiledStateGraph, message: str, thread_id: str) -> Ite
             yield text
 
 
-async def astream_reply(agent: CompiledStateGraph, message: str, thread_id: str) -> AsyncIterator[str]:
-    """Async version of stream_reply, for the API."""
-    async for chunk, metadata in agent.astream(
-        _user_input(message), thread_config(thread_id), stream_mode="messages"
+def _status(stage: str, text: str) -> dict:
+    return {"type": "status", "stage": stage, "text": text}
+
+
+def _describe_call(call: dict) -> str:
+    return describe_search(call["args"]) if call["name"] == "search_tires" else f"Running {call['name']}"
+
+
+def _describe_result(message: ToolMessage) -> str:
+    return describe_results(message.content) if message.name == "search_tires" else f"{message.name} finished"
+
+
+async def astream_turn(agent: CompiledStateGraph, message: str, thread_id: str) -> AsyncIterator[dict]:
+    """One shopper message as a stream of events for the UI.
+
+    Yields {"type": "status", "stage": "thinking" | "searching" | "results", "text": ...} as the
+    agent works, and {"type": "token", "text": ...} for each chunk of the answer.
+    """
+    yield _status("thinking", "Thinking…")
+    async for mode, chunk in agent.astream(
+        _user_input(message), thread_config(thread_id), stream_mode=["messages", "updates"]
     ):
-        if text := _answer_text(chunk, metadata):
-            yield text
+        if mode == "messages":
+            if text := _answer_text(*chunk):
+                yield {"type": "token", "text": text}
+            continue
+        # "updates" carry each finished step: model steps with complete tool calls, then tool results.
+        for update in chunk.values():
+            messages = (update or {}).get("messages", [])
+            for item in messages:
+                if isinstance(item, AIMessage):
+                    for call in item.tool_calls:
+                        yield _status("searching", _describe_call(call))
+                elif isinstance(item, ToolMessage):
+                    yield _status("results", _describe_result(item))
+            if any(isinstance(item, ToolMessage) for item in messages):
+                yield _status("thinking", "Thinking…")  # the model runs again with the results
+
+
+async def astream_reply(agent: CompiledStateGraph, message: str, thread_id: str) -> AsyncIterator[str]:
+    """Only the answer text of astream_turn."""
+    async for event in astream_turn(agent, message, thread_id):
+        if event["type"] == "token":
+            yield event["text"]

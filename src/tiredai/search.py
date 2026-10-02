@@ -270,3 +270,47 @@ def catalog_tools(client: QdrantClient | None, collection: str, encoder_factory)
     if client is None or not client.collection_exists(collection):
         return []
     return [make_search_tool(CatalogSearch(client, collection, encoder_factory()))]
+
+
+def _money(value) -> str:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return f"${amount:,.0f}" if amount.is_integer() else f"${amount:,.2f}"
+
+
+def describe_search(args: dict) -> str:
+    """Status line for a search_tires call, e.g. 'Searching the catalog: 205/60R15 · All Season · up to $60'."""
+    parts = [str(args["size"])] if args.get("size") else []
+    if args.get("query"):
+        parts.append(f'"{args["query"]}"')
+    parts += [str(args[key]) for key in ("season", "brand", "car_type", "performance") if args.get(key)]
+    if args.get("run_flat") in (True, "true"):
+        parts.append("run-flat")
+    elif args.get("run_flat") in (False, "false"):
+        parts.append("no run-flat")
+    if args.get("min_speed_rating"):
+        parts.append(f"speed rating {args['min_speed_rating']} or higher")
+    low, high = args.get("min_price"), args.get("max_price")
+    if low is not None and high is not None:
+        parts.append(f"{_money(low)}–{_money(high)}")
+    elif high is not None:
+        parts.append(f"up to {_money(high)}")
+    elif low is not None:
+        parts.append(f"from {_money(low)}")
+    if args.get("sort") in ("price_asc", "price_desc"):
+        parts.append("cheapest first" if args["sort"] == "price_asc" else "most expensive first")
+    return "Searching the catalog" + (f": {' · '.join(parts)}" if parts else "")
+
+
+def describe_results(content: str) -> str:
+    """Status line for what search_tires returned."""
+    try:
+        result = json.loads(content)
+    except (TypeError, ValueError):
+        return "The search failed"  # e.g. invalid arguments; the agent gets the error text
+    if "error" in result:
+        return f"Search problem: {result['error']}"
+    total = result.get("total_matching", 0)
+    return "No tires match" if total == 0 else f"Found {total:,} tire{'' if total == 1 else 's'}"
