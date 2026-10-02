@@ -1,2 +1,10 @@
 data/
 PROJECT_REQUIREMENTS.md
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
