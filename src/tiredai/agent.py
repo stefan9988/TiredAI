@@ -1,9 +1,10 @@
 """The shopping assistant: a LangChain agent on an OpenRouter chat model, with per-thread memory."""
 
-from collections.abc import AsyncIterator, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
 
 from langchain.agents import create_agent
+from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse, ToolCallLimitMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -13,7 +14,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
-from tiredai.config import LLMSettings, Settings
+from tiredai.config import AgentSettings, LLMSettings, Settings
 from tiredai.search import describe_results, describe_search
 
 APP_TITLE = "TiredAI"
@@ -51,6 +52,33 @@ def build_chat_model(llm: LLMSettings, api_key: str | None) -> ChatOpenRouter:
     )
 
 
+class RecentHistory(AgentMiddleware):
+    """Sends the model only the latest turns (see recent_turns); the saved conversation keeps all of them."""
+
+    def __init__(self, max_messages: int):
+        super().__init__()
+        self.max_messages = max_messages
+
+    def _trimmed(self, request: ModelRequest) -> ModelRequest:
+        return request.override(messages=recent_turns(request.messages, self.max_messages))
+
+    def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
+        return handler(self._trimmed(request))
+
+    async def awrap_model_call(
+        self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
+    ) -> ModelResponse:
+        return await handler(self._trimmed(request))
+
+
+def agent_limits(limits: AgentSettings) -> list[AgentMiddleware]:
+    return [
+        RecentHistory(limits.history_messages),
+        # Calls over the limit get an error result instead of running, and the model answers with what it has.
+        ToolCallLimitMiddleware(run_limit=limits.max_tool_calls, exit_behavior="continue"),
+    ]
+
+
 def build_agent(
     settings: Settings,
     *,
@@ -58,11 +86,12 @@ def build_agent(
     tools: Sequence[BaseTool] = (),
     checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledStateGraph:
-    """Agent with the system prompt from SYSTEM_PROMPT_PATH; history is kept per thread id."""
+    """Agent with the system prompt from SYSTEM_PROMPT_PATH and the AGENT_* limits; history is kept per thread id."""
     return create_agent(
         model or build_chat_model(settings.llm, settings.openrouter_api_key),
         tools=list(tools),
         system_prompt=load_system_prompt(settings.llm.system_prompt_path),
+        middleware=agent_limits(settings.agent),
         checkpointer=checkpointer or InMemorySaver(),
         name="tire_assistant",
     )
@@ -137,14 +166,15 @@ async def astream_turn(agent: CompiledStateGraph, message: str, thread_id: str) 
                 yield {"type": "token", "text": text}
             continue
         # "updates" carry each finished step: model steps with complete tool calls, then tool results.
-        for update in chunk.values():
+        for node, update in chunk.items():
             messages = (update or {}).get("messages", [])
             for item in messages:
                 if isinstance(item, AIMessage):
                     for call in item.tool_calls:
                         yield _status("searching", _describe_call(call))
                 elif isinstance(item, ToolMessage):
-                    yield _status("results", _describe_result(item))
+                    over_limit = node.startswith(ToolCallLimitMiddleware.__name__)
+                    yield _status("results", "Search limit reached" if over_limit else _describe_result(item))
             if any(isinstance(item, ToolMessage) for item in messages):
                 yield _status("thinking", "Thinking…")  # the model runs again with the results
 
@@ -171,6 +201,25 @@ def transcript(messages: Sequence[BaseMessage]) -> list[dict]:
             else:
                 turns.append({"role": "assistant", "content": message.text})
     return turns
+
+
+def recent_turns(messages: Sequence[BaseMessage], max_messages: int) -> list[BaseMessage]:
+    """The latest whole turns that hold at most `max_messages` chat messages, counted like transcript().
+
+    A turn starts at a shopper message and keeps its tool calls and results. The current (last) turn
+    is always kept, whatever its size.
+    """
+    starts = [i for i, message in enumerate(messages) if isinstance(message, HumanMessage)]
+    if not starts:
+        return list(messages)
+    keep = starts[-1]
+    count = len(transcript(messages[keep:]))
+    for start in reversed(starts[:-1]):
+        count += len(transcript(messages[start:keep]))
+        if count > max_messages:
+            return list(messages[keep:])
+        keep = start
+    return list(messages)
 
 
 async def aget_transcript(agent: CompiledStateGraph, thread_id: str) -> list[dict]:

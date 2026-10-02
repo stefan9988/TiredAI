@@ -25,9 +25,7 @@ SPEED_ORDER = [
 ]  # fmt: skip
 
 LIGHT_TRUCK = "Light Truck"
-DEFAULT_LIMIT = 5
-MAX_LIMIT = 10
-CANDIDATES = 50  # results taken from each of the dense and BM25 searches before fusion
+CANDIDATES = 50  # at least this many results are taken from each of the dense and BM25 searches before fusion
 # 'model' is wrong in 21% of rows, so it is kept out of what the agent sees.
 HIDDEN_FIELDS = {"model", DOCUMENT_KEY}
 
@@ -77,10 +75,13 @@ def speed_rank(rating: str) -> int | None:
 
 
 class CatalogSearch:
-    def __init__(self, client: QdrantClient, collection: str, encoder: QueryEncoder):
+    """Every search returns up to `max_results` products (AGENT_MAX_SEARCH_RESULTS)."""
+
+    def __init__(self, client: QdrantClient, collection: str, encoder: QueryEncoder, *, max_results: int):
         self.client = client
         self.collection = collection
         self.encoder = encoder
+        self.max_results = max_results
 
         values: dict[str, set[str]] = {key: set() for key in ("size", "brand", "season", "carType", "performance", "speedRating")}
         offset = None
@@ -115,7 +116,6 @@ class CatalogSearch:
         run_flat: bool | None = None,
         min_speed_rating: str | None = None,
         sort: Sort = "relevance",
-        limit: int = DEFAULT_LIMIT,
     ) -> dict:
         must: list[models.Condition] = []
         filters: dict = {}
@@ -179,7 +179,8 @@ class CatalogSearch:
             return {"error": " ".join(errors)}
 
         query_filter = models.Filter(must=must) if must else None
-        limit = max(1, min(int(limit), MAX_LIMIT))
+        limit = self.max_results
+        candidates = max(CANDIDATES, limit)
         total = self.client.count(self.collection, count_filter=query_filter, exact=True).count
 
         if query and query.strip():
@@ -190,18 +191,18 @@ class CatalogSearch:
             points = self.client.query_points(
                 self.collection,
                 prefetch=[
-                    models.Prefetch(query=dense, using=DENSE, limit=CANDIDATES),
-                    models.Prefetch(query=sparse, using=SPARSE, limit=CANDIDATES),
+                    models.Prefetch(query=dense, using=DENSE, limit=candidates),
+                    models.Prefetch(query=sparse, using=SPARSE, limit=candidates),
                 ],
                 query=models.FusionQuery(fusion=models.Fusion.RRF),
                 query_filter=query_filter,
-                limit=limit if sort == "relevance" else CANDIDATES,
+                limit=limit if sort == "relevance" else candidates,
                 with_payload=True,
             ).points
             if sort != "relevance":
                 # Price order among the most relevant products for the query.
                 points = sorted(points, key=lambda p: p.payload["price"], reverse=sort == "price_desc")[:limit]
-            order = sort if sort == "relevance" else f"{sort} among the {CANDIDATES} most relevant"
+            order = sort if sort == "relevance" else f"{sort} among the {candidates} most relevant"
         else:
             # Without a query there is nothing to rank by, so results are ordered by price.
             direction = models.Direction.DESC if sort == "price_desc" else models.Direction.ASC
@@ -241,7 +242,6 @@ class SearchArgs(BaseModel):
     run_flat: bool | None = Field(None, description="true for only run-flat tires, false to exclude them.")
     min_speed_rating: str | None = Field(None, description="Lowest acceptable speed rating, e.g. 'H'.")
     sort: Sort = Field("relevance", description="'relevance' (needs a query), 'price_asc' or 'price_desc'.")
-    limit: int = Field(DEFAULT_LIMIT, description=f"Number of products to return, at most {MAX_LIMIT}.")
 
 
 def make_search_tool(catalog: CatalogSearch) -> BaseTool:
@@ -255,7 +255,7 @@ Allowed values (case-insensitive):
 - performance: {', '.join(catalog.performances)}
 - min_speed_rating, slowest to fastest: {', '.join(SPEED_ORDER)}
 
-Returns JSON with total_matching (products matching all filters) and up to `limit` products. If total_matching is 0, nothing in the catalog matches."""
+Returns JSON with total_matching (products matching all filters) and up to {catalog.max_results} products. If total_matching is 0, nothing in the catalog matches."""
 
     def search_tires(**kwargs) -> str:
         return json.dumps(catalog.search(**kwargs), ensure_ascii=False)
@@ -265,11 +265,13 @@ Returns JSON with total_matching (products matching all filters) and up to `limi
     )
 
 
-def catalog_tools(client: QdrantClient | None, collection: str, encoder_factory) -> list[BaseTool]:
+def catalog_tools(
+    client: QdrantClient | None, collection: str, encoder_factory, *, max_results: int
+) -> list[BaseTool]:
     """The search tool when the index exists, otherwise no tools; the encoder is only built if needed."""
     if client is None or not client.collection_exists(collection):
         return []
-    return [make_search_tool(CatalogSearch(client, collection, encoder_factory()))]
+    return [make_search_tool(CatalogSearch(client, collection, encoder_factory(), max_results=max_results))]
 
 
 def _money(value) -> str:

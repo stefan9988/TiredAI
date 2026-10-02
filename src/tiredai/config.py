@@ -36,6 +36,13 @@ def _bool(raw: str) -> bool:
     return values[raw.lower()]
 
 
+def _positive_int(raw: str) -> int:
+    value = int(raw)
+    if value < 1:
+        raise ValueError(raw)
+    return value
+
+
 def _json_object(raw: str) -> dict[str, Any]:
     value = json.loads(raw)
     if not isinstance(value, dict):
@@ -85,6 +92,27 @@ class LLMSettings:
 
 
 @dataclass(frozen=True)
+class AgentSettings:
+    """Limits that keep each model request small."""
+
+    history_messages: int  # earlier chat messages the model sees, counted in whole turns
+    max_tool_calls: int  # per shopper message
+    max_search_results: int  # products per search
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> "AgentSettings":
+        def limit(name: str, default: int) -> int:
+            value = _parsed(env, name, _positive_int, "positive integer")
+            return default if value is None else value
+
+        return cls(
+            history_messages=limit("AGENT_HISTORY_MESSAGES", 10),
+            max_tool_calls=limit("AGENT_MAX_TOOL_CALLS", 5),
+            max_search_results=limit("AGENT_MAX_SEARCH_RESULTS", 20),
+        )
+
+
+@dataclass(frozen=True)
 class Settings:
     raw_data_path: Path
     processed_data_path: Path
@@ -99,6 +127,7 @@ class Settings:
     embedding_cache_path: Path
     openrouter_api_key: str | None
     llm: LLMSettings
+    agent: AgentSettings
     conversations_path: Path
     api_host: str
     api_port: int
@@ -120,6 +149,7 @@ class Settings:
             embedding_cache_path=_path("EMBEDDING_CACHE_PATH", ".cache/embeddings.sqlite"),
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
             llm=LLMSettings.from_env(os.environ),
+            agent=AgentSettings.from_env(os.environ),
             conversations_path=_path("CONVERSATIONS_DB_PATH", "data/conversations.sqlite"),
             api_host=os.getenv("API_HOST") or "127.0.0.1",
             api_port=_parsed(os.environ, "API_PORT", int, "integer") or 8000,

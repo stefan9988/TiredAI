@@ -100,7 +100,10 @@ def create_app(
                 app.state.vector_store_error = str(exc)
             # Without an index the agent has no search tool; /health reports why.
             tools = catalog_tools(
-                app.state.vector_store, settings.qdrant_collection, lambda: encoder or build_encoder(settings)
+                app.state.vector_store,
+                settings.qdrant_collection,
+                lambda: encoder or build_encoder(settings),
+                max_results=settings.agent.max_search_results,
             )
             app.state.agent = build_agent(settings, model=model, tools=tools, checkpointer=checkpointer)
             if added := await app.state.conversations.backfill(checkpointer, app.state.agent):

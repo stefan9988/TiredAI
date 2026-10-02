@@ -11,11 +11,12 @@ from tiredai.agent import (
     build_agent,
     build_chat_model,
     load_system_prompt,
+    recent_turns,
     stream_reply,
     thread_config,
     transcript,
 )
-from tiredai.config import LLMSettings, Settings
+from tiredai.config import AgentSettings, LLMSettings, Settings
 from tiredai.documents import products
 from tiredai.preprocessing import normalize
 from tiredai.search import CatalogSearch, make_search_tool
@@ -27,7 +28,9 @@ def settings(tmp_path):
     prompt = tmp_path / "system.md"
     prompt.write_text("You are a test assistant.\n")
     loaded = Settings.load()
-    return dataclasses.replace(loaded, llm=dataclasses.replace(loaded.llm, system_prompt_path=prompt))
+    return dataclasses.replace(
+        loaded, llm=dataclasses.replace(loaded.llm, system_prompt_path=prompt), agent=AgentSettings.from_env({})
+    )
 
 
 def test_reply_is_streamed_in_chunks(settings):
@@ -126,7 +129,7 @@ def test_chat_model_requires_an_api_key():
 def test_agent_answers_from_search_results(settings):
     client = QdrantClient(":memory:")
     index_products(client, "tires", products(normalize(raw_frame({}))), FakeEncoder())
-    tool = make_search_tool(CatalogSearch(client, "tires", FakeEncoder()))
+    tool = make_search_tool(CatalogSearch(client, "tires", FakeEncoder(), max_results=20))
     model = ToolCallingModel(
         messages=iter([tool_call("search_tires", size="205/55R15"), AIMessage(content="The Accelera Phi-R is $59.93.")])
     )
@@ -144,7 +147,7 @@ def test_agent_answers_from_search_results(settings):
 def test_text_before_and_after_a_tool_call_is_separated(settings):
     client = QdrantClient(":memory:")
     index_products(client, "tires", products(normalize(raw_frame({}))), FakeEncoder())
-    tool = make_search_tool(CatalogSearch(client, "tires", FakeEncoder()))
+    tool = make_search_tool(CatalogSearch(client, "tires", FakeEncoder(), max_results=20))
     first_search = {"name": "search_tires", "args": {"size": "205/55R15"}, "id": "call-1"}
     model = ToolCallingModel(
         messages=iter(
@@ -196,3 +199,41 @@ def test_transcript_keeps_a_turn_that_got_no_answer():
         {"role": "user", "content": "Hello?"},
         {"role": "assistant", "content": "Hello."},
     ]
+
+
+def turn(user: str, answer: str | None = None, searches: int = 0) -> list:
+    messages = [HumanMessage(user)]
+    for i in range(searches):
+        messages.append(AIMessage(content="", tool_calls=[{"name": "search_tires", "args": {}, "id": f"{user}-{i}"}]))
+        messages.append(ToolMessage(content="{}", tool_call_id=f"{user}-{i}", name="search_tires"))
+    return messages + ([AIMessage(content=answer)] if answer else [])
+
+
+def test_recent_turns_keeps_whole_turns_up_to_the_message_limit():
+    old = turn("1", "a1") + turn("2", "a2", searches=2) + turn("3")  # turn 3 got no answer
+    current = turn("4", searches=1)
+
+    # current: 1 chat message; turn 3: 1; turn 2: 2 (its searches come along); turn 1: 2
+    assert recent_turns(old + current, 4) == turn("2", "a2", searches=2) + turn("3") + current
+    assert recent_turns(old + current, 5) == turn("2", "a2", searches=2) + turn("3") + current
+    assert recent_turns(old + current, 6) == old + current
+    assert recent_turns(old + current, 1) == current
+
+
+def test_recent_turns_always_keeps_the_current_turn():
+    current = turn("now", "Let me check.", searches=6)
+
+    assert recent_turns(turn("before", "answer") + current, 1) == current
+
+
+def test_model_sees_only_recent_history_but_all_of_it_is_saved(settings):
+    limited = dataclasses.replace(settings, agent=dataclasses.replace(settings.agent, history_messages=3))
+    model = fake_model("One.", "Two.", "Three.")
+    agent = build_agent(limited, model=model)
+
+    for message in ("First", "Second", "Third"):
+        list(stream_reply(agent, message, "thread-1"))
+
+    assert [m.content for m in model.prompts[2]] == ["You are a test assistant.", "Second", "Two.", "Third"]
+    saved = agent.get_state(thread_config("thread-1")).values["messages"]
+    assert [m.content for m in saved] == ["First", "One.", "Second", "Two.", "Third", "Three."]

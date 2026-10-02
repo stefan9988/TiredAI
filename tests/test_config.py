@@ -1,6 +1,6 @@
 import pytest
 
-from tiredai.config import ROOT, LLMSettings
+from tiredai.config import ROOT, AgentSettings, LLMSettings
 
 
 def test_llm_defaults_leave_model_parameters_unset():
@@ -63,3 +63,23 @@ def test_empty_values_mean_unset():
 def test_invalid_values_name_the_variable(name, value):
     with pytest.raises(ValueError, match=name):
         LLMSettings.from_env({name: value})
+
+
+def test_agent_limit_defaults():
+    assert AgentSettings.from_env({}) == AgentSettings(history_messages=10, max_tool_calls=5, max_search_results=20)
+    assert AgentSettings.from_env({"AGENT_MAX_TOOL_CALLS": " "}).max_tool_calls == 5
+
+
+def test_agent_limits_are_parsed_from_env():
+    limits = AgentSettings.from_env(
+        {"AGENT_HISTORY_MESSAGES": "4", "AGENT_MAX_TOOL_CALLS": "1", "AGENT_MAX_SEARCH_RESULTS": "50"}
+    )
+
+    assert limits == AgentSettings(history_messages=4, max_tool_calls=1, max_search_results=50)
+
+
+@pytest.mark.parametrize("name", ["AGENT_HISTORY_MESSAGES", "AGENT_MAX_TOOL_CALLS", "AGENT_MAX_SEARCH_RESULTS"])
+@pytest.mark.parametrize("value", ["0", "-3", "1.5", "ten"])
+def test_agent_limits_must_be_positive_integers(name, value):
+    with pytest.raises(ValueError, match=name):
+        AgentSettings.from_env({name: value})

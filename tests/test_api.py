@@ -12,7 +12,7 @@ from qdrant_client import QdrantClient
 
 from tiredai.agent import SEGMENT_SEPARATOR, build_agent, stream_reply
 from tiredai.api import MAX_MESSAGE_CHARS, create_app
-from tiredai.config import Settings
+from tiredai.config import AgentSettings, Settings
 from tiredai.documents import products
 from tiredai.preprocessing import normalize
 from tiredai.vectorstore import index_products
@@ -32,7 +32,18 @@ def settings(tmp_path):
         qdrant_url=None,
         qdrant_collection="tires",
         llm=dataclasses.replace(loaded.llm, system_prompt_path=prompt),
+        agent=AgentSettings.from_env({}),
     )
+
+
+def with_limits(settings, **limits):
+    return dataclasses.replace(settings, agent=dataclasses.replace(settings.agent, **limits))
+
+
+def index_catalog(settings, *rows: dict):
+    store = QdrantClient(path=str(settings.qdrant_path))
+    index_products(store, "tires", products(normalize(raw_frame(*rows))), FakeEncoder())
+    store.close()
 
 
 def serve(settings, model):
@@ -334,3 +345,60 @@ def test_chats_from_before_titles_existed_are_listed(settings):
     assert (listed["id"], listed["title"]) == ("old-chat", "I need tires")
     assert listed["created_at"] < listed["updated_at"]
     assert [m["content"] for m in messages] == ["I need tires", "Which size?", "205/55R16", "Noted."]
+
+
+def test_streamed_turns_send_the_model_only_recent_history(settings):
+    model = fake_model("One.", "Two.", "Three.")
+    with serve(with_limits(settings, history_messages=3), model) as client:
+        conversation_id = None
+        for message in ("First", "Second", "Third"):
+            events = sse_events(
+                client.post("/chat/stream", json={"message": message, "conversation_id": conversation_id}).text
+            )
+            conversation_id = events[0][1]["conversation_id"]
+        saved = client.get(f"/conversations/{conversation_id}/messages").json()
+
+    assert [m.content for m in model.prompts[-1]] == [PROMPT, "Second", "Two.", "Third"]
+    assert [m["content"] for m in saved] == ["First", "One.", "Second", "Two.", "Third", "Three."]
+
+
+def test_searches_over_the_limit_are_not_run(settings):
+    index_catalog(settings, {})
+    search = lambda i: {"name": "search_tires", "args": {"size": "205/55R15"}, "id": f"call-{i}"}  # noqa: E731
+    model = ToolCallingModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[search(1)]),
+                AIMessage(content="", tool_calls=[search(2), search(3)]),
+                AIMessage(content="Here is what I found."),
+                AIMessage(content="", tool_calls=[search(4)]),  # the next message may search again
+                AIMessage(content="Still there."),
+            ]
+        )
+    )
+
+    with TestClient(create_app(with_limits(settings, max_tool_calls=2), model=model, encoder=FakeEncoder())) as client:
+        events = sse_events(client.post("/chat/stream", json={"message": "205/55R15?"}).text)
+        conversation_id = events[0][1]["conversation_id"]
+        client.post("/chat", json={"message": "Again?", "conversation_id": conversation_id})
+
+    statuses = [data["text"] for name, data in events if name == "status"]
+    assert statuses.count("Found 1 tire") == 2 and "Search limit reached" in statuses
+    assert events[-1][1]["reply"] == "Here is what I found."
+    results = {m.tool_call_id: m for m in model.prompts[2] if isinstance(m, ToolMessage)}
+    assert json.loads(results["call-1"].content)["total_matching"] == 1
+    assert json.loads(results["call-2"].content)["total_matching"] == 1
+    assert "limit exceeded" in results["call-3"].content and results["call-3"].status == "error"
+    next_turn = {m.tool_call_id: m for m in model.prompts[4] if isinstance(m, ToolMessage)}
+    assert json.loads(next_turn["call-4"].content)["total_matching"] == 1
+
+
+def test_searches_return_the_configured_number_of_products(settings):
+    index_catalog(settings, {}, {}, {})
+    model = ToolCallingModel(messages=iter([tool_call("search_tires", size="205/55R15"), AIMessage(content="Two shown.")]))
+
+    with TestClient(create_app(with_limits(settings, max_search_results=2), model=model, encoder=FakeEncoder())) as client:
+        client.post("/chat", json={"message": "205/55R15?"})
+
+    [result] = [json.loads(m.content) for m in model.prompts[1] if isinstance(m, ToolMessage)]
+    assert (result["total_matching"], result["returned"]) == (3, 2)

@@ -46,7 +46,7 @@ CATALOG = [
 def catalog():
     client = QdrantClient(":memory:")
     index_products(client, "tires", products(normalize(raw_frame(*CATALOG))), FakeEncoder())
-    yield CatalogSearch(client, "tires", FakeEncoder())
+    yield CatalogSearch(client, "tires", FakeEncoder(), max_results=20)
     client.close()
 
 
@@ -146,8 +146,8 @@ def test_run_flat_filter(catalog):
 def test_minimum_speed_rating(catalog):
     assert skus(catalog.search(size="205/55R16", min_speed_rating="V")) == ["CHEAP", "PILOT"]
     assert skus(catalog.search(size="205/55R16", min_speed_rating="w")) == ["PILOT"]
-    assert "TRACTOR" in skus(catalog.search(min_speed_rating="A6", limit=10))  # 'A6/A8' counts as A6
-    assert "TRACTOR" not in skus(catalog.search(min_speed_rating="A8", limit=10))
+    assert "TRACTOR" in skus(catalog.search(min_speed_rating="A6"))  # 'A6/A8' counts as A6
+    assert "TRACTOR" not in skus(catalog.search(min_speed_rating="A8"))
 
 
 def test_unknown_speed_rating_is_rejected(catalog):
@@ -182,10 +182,16 @@ def test_no_match_says_so(catalog):
     assert "No products" in result["note"]
 
 
-def test_limit_is_capped(catalog):
-    assert catalog.search(limit=100)["returned"] == len(CATALOG)
-    assert catalog.search(limit=2)["returned"] == 2
-    assert catalog.search(limit=0)["returned"] == 1
+def test_searches_return_up_to_max_results_products(catalog):
+    assert catalog.search()["returned"] == len(CATALOG)
+
+    small = CatalogSearch(catalog.client, "tires", FakeEncoder(), max_results=2)
+    by_price, by_relevance, query_by_price = small.search(), small.search(query="tire"), small.search(query="tire", sort="price_desc")
+
+    assert skus(by_price) == ["CHEAP", "VINTAGE"]
+    assert by_relevance["returned"] == 2
+    assert skus(query_by_price) == ["LT-KO2", "PILOT"]
+    assert all(r["total_matching"] == len(CATALOG) for r in (by_price, by_relevance, query_by_price))
 
 
 def test_embedding_failure_is_returned_as_an_error(catalog):
@@ -193,7 +199,7 @@ def test_embedding_failure_is_returned_as_an_error(catalog):
         def encode_query(self, text):
             raise EmbeddingError("OpenRouter daily free-model limit reached")
 
-    broken = CatalogSearch(catalog.client, "tires", DownEncoder())
+    broken = CatalogSearch(catalog.client, "tires", DownEncoder(), max_results=20)
 
     assert "temporarily unavailable" in broken.search(query="winter tires")["error"]
     assert broken.search(size="205/55R16")["total_matching"] == 3  # filters alone need no embedding
@@ -202,9 +208,11 @@ def test_embedding_failure_is_returned_as_an_error(catalog):
 def test_tool_returns_json_and_lists_allowed_values(catalog):
     tool = make_search_tool(catalog)
 
-    result = json.loads(tool.invoke({"size": "205/55R16", "sort": "price_asc", "limit": 1}))
+    result = json.loads(tool.invoke({"size": "205/55R16", "sort": "price_asc"}))
 
-    assert result["products"][0]["sku"] == "CHEAP"
+    assert skus(result) == ["CHEAP", "RUNFLAT", "PILOT"]
+    assert "limit" not in tool.args  # the result count is a setting, not the model's choice
+    assert "up to 20 products" in tool.description
     assert "Light Truck, Passenger, Tractor, Truck/SUV" in tool.description
     assert "A1" in tool.description and "Y" in tool.description
 
@@ -215,8 +223,8 @@ def test_no_tool_without_an_index():
     def factory():
         raise AssertionError("the encoder must not be built without an index")
 
-    assert catalog_tools(client, "tires", factory) == []
-    assert catalog_tools(None, "tires", factory) == []
+    assert catalog_tools(client, "tires", factory, max_results=20) == []
+    assert catalog_tools(None, "tires", factory, max_results=20) == []
 
 
 @pytest.mark.parametrize(

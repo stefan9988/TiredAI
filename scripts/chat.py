@@ -40,7 +40,12 @@ def main() -> None:
         client = None
         print(f"[warning] Catalog unavailable, answering without product search: {exc}", file=sys.stderr)
     try:
-        tools = catalog_tools(client, settings.qdrant_collection, lambda: build_encoder(settings))
+        tools = catalog_tools(
+            client,
+            settings.qdrant_collection,
+            lambda: build_encoder(settings),
+            max_results=settings.agent.max_search_results,
+        )
         if client is not None and not tools:
             print("[warning] No index found; run scripts/build_index.py for product search.", file=sys.stderr)
         agent = build_agent(settings, tools=tools)
