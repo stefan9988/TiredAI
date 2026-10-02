@@ -2,12 +2,15 @@ import dataclasses
 import json
 
 import pytest
-from conftest import FakeEncoder, ToolCallingModel, fake_model, raw_frame, tool_call
+from conftest import FakeEncoder, ToolCallingModel, fake_model, raw_frame, tool_call, unparsable_call
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import StructuredTool
 from qdrant_client import QdrantClient
 
 from tiredai.agent import (
     SEGMENT_SEPARATOR,
+    UNPARSABLE_CALL_RETRIES,
+    UnparsableToolCallsError,
     build_agent,
     build_chat_model,
     load_system_prompt,
@@ -237,3 +240,106 @@ def test_model_sees_only_recent_history_but_all_of_it_is_saved(settings):
     assert [m.content for m in model.prompts[2]] == ["You are a test assistant.", "Second", "Two.", "Third"]
     saved = agent.get_state(thread_config("thread-1")).values["messages"]
     assert [m.content for m in saved] == ["First", "One.", "Second", "Two.", "Third", "Three."]
+
+
+def catalog_search_tool():
+    client = QdrantClient(":memory:")
+    index_products(client, "tires", products(normalize(raw_frame({}))), FakeEncoder())
+    return make_search_tool(CatalogSearch(client, "tires", FakeEncoder(), max_results=20))
+
+
+def search(call_id: str, **args) -> dict:
+    return {"name": "search_tires", "args": args, "id": call_id}
+
+
+def saved_messages(agent, thread_id="thread-1") -> list:
+    return agent.get_state(thread_config(thread_id)).values["messages"]
+
+
+def assert_every_tool_call_answered(messages):
+    answered = {m.tool_call_id for m in messages if isinstance(m, ToolMessage)}
+    calls = [c for m in messages if isinstance(m, AIMessage) for c in [*m.tool_calls, *m.invalid_tool_calls]]
+    assert all(c["id"] in answered for c in calls)
+
+
+def test_unknown_tool_arguments_are_rejected_so_the_model_can_fix_them(settings):
+    model = ToolCallingModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[search("call-1", size="205/55R15", speed_rating="V")]),
+                AIMessage(content="", tool_calls=[search("call-2", size="205/55R15", min_speed_rating="V")]),
+                AIMessage(content="One tire fits."),
+            ]
+        )
+    )
+    agent = build_agent(settings, model=model, tools=[catalog_search_tool()])
+
+    assert "".join(stream_reply(agent, "205/55R15, V rated?", "thread-1")) == "One tire fits."
+    rejected, accepted = [m for m in saved_messages(agent) if isinstance(m, ToolMessage)]
+    assert rejected.status == "error" and "speed_rating" in rejected.content and "Extra inputs are not permitted" in rejected.content
+    assert json.loads(accepted.content)["filters"]["speedRating"] == "V"
+
+
+def test_a_tool_that_crashes_gives_the_model_an_error_result(settings):
+    def search_tires(size: str) -> str:
+        raise RuntimeError("Qdrant connection refused")
+
+    broken = StructuredTool.from_function(func=search_tires, name="search_tires", description="Search.")
+    model = ToolCallingModel(
+        messages=iter([tool_call("search_tires", size="205/55R15"), AIMessage(content="I can't search right now."), AIMessage(content="Hi again.")])
+    )
+    agent = build_agent(settings, model=model, tools=[broken])
+
+    assert "".join(stream_reply(agent, "205/55R15?", "thread-1")) == "I can't search right now."
+    [result] = [m for m in saved_messages(agent) if isinstance(m, ToolMessage)]
+    assert result.status == "error"
+    assert result.content == "Error: search_tires failed with an internal error (RuntimeError: Qdrant connection refused)."
+    # The history stays valid, so the conversation goes on.
+    assert "".join(stream_reply(agent, "Hello?", "thread-1")) == "Hi again."
+    assert_every_tool_call_answered(model.prompts[-1])
+
+
+def test_unparsable_tool_calls_are_sent_again(settings):
+    model = ToolCallingModel(
+        messages=iter([unparsable_call("size: 205/55R15"), tool_call("search_tires", size="205/55R15"), AIMessage(content="Found one.")])
+    )
+    agent = build_agent(settings, model=model, tools=[catalog_search_tool()])
+
+    assert "".join(stream_reply(agent, "205/55R15?", "thread-1")) == "Found one."
+    *_, failed, error = model.prompts[1]  # the retry sees its failed attempt and why it failed
+    assert failed.invalid_tool_calls[0]["args"] == "size: 205/55R15"
+    assert error.status == "error" and "could not be parsed" in error.content and error.tool_call_id == "bad-call"
+    saved = saved_messages(agent)
+    assert [type(m).__name__ for m in saved] == ["HumanMessage", "AIMessage", "ToolMessage", "AIMessage", "ToolMessage", "AIMessage"]
+    assert_every_tool_call_answered(saved)
+    assert transcript(saved) == [{"role": "user", "content": "205/55R15?"}, {"role": "assistant", "content": "Found one."}]
+
+
+def test_valid_calls_run_next_to_unparsable_ones(settings):
+    mixed = AIMessage(
+        content="",
+        tool_calls=[search("good-call", size="205/55R15")],
+        invalid_tool_calls=[{"name": "search_tires", "args": "brand=Accelera", "id": "bad-call", "error": None, "type": "invalid_tool_call"}],
+    )
+    model = ToolCallingModel(messages=iter([mixed, AIMessage(content="Found one.")]))
+    agent = build_agent(settings, model=model, tools=[catalog_search_tool()])
+
+    assert "".join(stream_reply(agent, "205/55R15?", "thread-1")) == "Found one."
+    results = {m.tool_call_id: m for m in model.prompts[1] if isinstance(m, ToolMessage)}
+    assert json.loads(results["good-call"].content)["total_matching"] == 1
+    assert "could not be parsed" in results["bad-call"].content
+
+
+def test_a_turn_fails_when_tool_calls_stay_unparsable(settings):
+    attempts = UNPARSABLE_CALL_RETRIES + 1
+    model = ToolCallingModel(
+        messages=iter([*(unparsable_call("size: 205/55R15", f"bad-{i}") for i in range(attempts)), AIMessage(content="Hello.")])
+    )
+    agent = build_agent(settings, model=model, tools=[catalog_search_tool()])
+
+    with pytest.raises(UnparsableToolCallsError, match=f"{attempts} times"):
+        list(stream_reply(agent, "205/55R15?", "thread-1"))
+
+    assert len(model.prompts) == attempts
+    assert [type(m).__name__ for m in saved_messages(agent)] == ["HumanMessage"]  # no half-finished calls are kept
+    assert "".join(stream_reply(agent, "Hello?", "thread-1")) == "Hello."

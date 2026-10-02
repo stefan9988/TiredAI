@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from qdrant_client import QdrantClient, models
 
 from tiredai.embeddings import EmbeddingError
@@ -228,6 +228,10 @@ class CatalogSearch:
 
 
 class SearchArgs(BaseModel):
+    # An unknown argument (e.g. speed_rating instead of min_speed_rating) is an error the model sees and
+    # can fix, instead of a filter that silently isn't applied.
+    model_config = ConfigDict(extra="forbid")
+
     query: str | None = Field(
         None,
         description="Words describing the tire, or the product name the shopper asked about. Ranks results by relevance.",

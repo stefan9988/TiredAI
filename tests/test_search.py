@@ -217,6 +217,13 @@ def test_tool_returns_json_and_lists_allowed_values(catalog):
     assert "A1" in tool.description and "Y" in tool.description
 
 
+def test_tool_rejects_unknown_arguments(catalog):
+    tool = make_search_tool(catalog)
+
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        tool.invoke({"size": "205/55R16", "speed_rating": "V"})
+
+
 def test_no_tool_without_an_index():
     client = QdrantClient(":memory:")
 

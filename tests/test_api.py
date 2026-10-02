@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 
 import pytest
-from conftest import FailingModel, FakeEncoder, ToolCallingModel, fake_model, raw_frame, tool_call
+from conftest import FailingModel, FakeEncoder, ToolCallingModel, fake_model, raw_frame, tool_call, unparsable_call
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -402,3 +402,47 @@ def test_searches_return_the_configured_number_of_products(settings):
 
     [result] = [json.loads(m.content) for m in model.prompts[1] if isinstance(m, ToolMessage)]
     assert (result["total_matching"], result["returned"]) == (3, 2)
+
+
+def test_a_crashing_search_is_reported_to_the_model_while_streaming(settings):
+    index_catalog(settings, {})
+
+    class BrokenEncoder(FakeEncoder):
+        def encode_query(self, text):
+            raise RuntimeError("encoder crashed")
+
+    model = ToolCallingModel(
+        messages=iter([tool_call("search_tires", query="quiet tires"), AIMessage(content="I can't search right now.")])
+    )
+
+    with TestClient(create_app(settings, model=model, encoder=BrokenEncoder())) as client:
+        events = sse_events(client.post("/chat/stream", json={"message": "Quiet tires?"}).text)
+
+    assert [data["text"] for name, data in events if name == "status"][-2:] == ["The search failed", "Thinking…"]
+    assert events[-1] == ("end", {"conversation_id": events[0][1]["conversation_id"], "reply": "I can't search right now."})
+    [result] = [m for m in model.prompts[1] if isinstance(m, ToolMessage)]
+    assert "RuntimeError: encoder crashed" in result.content
+
+
+def test_an_unparsable_call_is_sent_again_while_streaming(settings):
+    index_catalog(settings, {})
+    model = ToolCallingModel(
+        messages=iter([unparsable_call("size: 205/55R15"), tool_call("search_tires", size="205/55R15"), AIMessage(content="Found one.")])
+    )
+
+    with TestClient(create_app(settings, model=model, encoder=FakeEncoder())) as client:
+        events = sse_events(client.post("/chat/stream", json={"message": "205/55R15?"}).text)
+
+    statuses = [data["text"] for name, data in events if name == "status"]
+    assert statuses == ["Thinking…", "The search failed", "Searching the catalog: 205/55R15", "Found 1 tire", "Thinking…"]
+    assert events[-1][1]["reply"] == "Found one."
+
+
+def test_calls_that_stay_unparsable_end_the_stream_with_an_error(settings):
+    index_catalog(settings, {})
+    model = ToolCallingModel(messages=iter([unparsable_call("size: 205/55R15", f"bad-{i}") for i in range(3)]))
+
+    with TestClient(create_app(settings, model=model, encoder=FakeEncoder())) as client:
+        events = sse_events(client.post("/chat/stream", json={"message": "205/55R15?"}).text)
+
+    assert events[-1][0] == "error" and "could not be parsed 3 times" in events[-1][1]["message"]

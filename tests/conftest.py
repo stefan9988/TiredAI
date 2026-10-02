@@ -81,15 +81,24 @@ class ToolCallingModel(RecordingModel):
     def _stream(self, messages, *args, **kwargs):
         self.prompts.append(messages)
         message = next(self.messages)
+        # Unparsable calls are streamed with their raw argument text, like a provider would send them.
+        calls = [(c, json.dumps(c["args"])) for c in message.tool_calls] + [(c, c["args"]) for c in message.invalid_tool_calls]
         chunks = [
-            {"name": c["name"], "args": json.dumps(c["args"]), "id": c["id"], "index": i, "type": "tool_call_chunk"}
-            for i, c in enumerate(message.tool_calls)
+            {"name": c["name"], "args": args, "id": c["id"], "index": i, "type": "tool_call_chunk"}
+            for i, (c, args) in enumerate(calls)
         ]
         yield ChatGenerationChunk(message=AIMessageChunk(content=message.content, tool_call_chunks=chunks))
 
 
 def tool_call(name: str, **args) -> AIMessage:
     return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": f"call-{name}"}])
+
+
+def unparsable_call(raw_args: str, call_id: str = "bad-call", name: str = "search_tires") -> AIMessage:
+    """A tool call whose argument text is not JSON."""
+    return AIMessage(
+        content="", invalid_tool_calls=[{"name": name, "args": raw_args, "id": call_id, "error": None, "type": "invalid_tool_call"}]
+    )
 
 
 class FakeEncoder:

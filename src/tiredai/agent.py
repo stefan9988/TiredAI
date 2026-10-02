@@ -1,10 +1,18 @@
 """The shopping assistant: a LangChain agent on an OpenRouter chat model, with per-thread memory."""
 
+import dataclasses
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
 
 from langchain.agents import create_agent
-from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse, ToolCallLimitMiddleware
+from langchain.agents.middleware import (
+    AgentMiddleware,
+    ModelRequest,
+    ModelResponse,
+    ToolCallLimitMiddleware,
+    ToolCallRequest,
+)
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -12,12 +20,18 @@ from langchain_core.tools import BaseTool
 from langchain_openrouter import ChatOpenRouter
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import GraphBubbleUp
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.types import Command
 
 from tiredai.config import AgentSettings, LLMSettings, Settings
 from tiredai.search import describe_results, describe_search
 
 APP_TITLE = "TiredAI"
+# How many times the model is asked again when none of its tool calls could be parsed.
+UNPARSABLE_CALL_RETRIES = 2
+
+logger = logging.getLogger(__name__)
 
 
 def load_system_prompt(path: Path) -> str:
@@ -71,9 +85,107 @@ class RecentHistory(AgentMiddleware):
         return await handler(self._trimmed(request))
 
 
-def agent_limits(limits: AgentSettings) -> list[AgentMiddleware]:
+class UnparsableToolCallsError(RuntimeError):
+    pass
+
+
+def _unparsable_call_errors(message: AIMessage) -> list[ToolMessage]:
+    return [
+        ToolMessage(
+            content=f"Error: the arguments of this {call.get('name') or 'tool'} call could not be parsed "
+            f"({call.get('error') or 'malformed or truncated JSON'}). Send the call again with valid JSON arguments.",
+            name=call.get("name") or "unknown",
+            tool_call_id=call["id"],
+            status="error",
+        )
+        for call in message.invalid_tool_calls
+        if call.get("id")
+    ]
+
+
+class UnparsableToolCalls(AgentMiddleware):
+    """Tool calls whose arguments can't be parsed get an error result, so the model can send them again.
+
+    If those were the model's only calls, it is asked again right away (otherwise the turn would end
+    without an answer), at most UNPARSABLE_CALL_RETRIES times before the turn fails. If it made valid
+    calls too, they run and the model sees the errors along with their results. Failed attempts stay
+    in the history, each with its error result.
+    """
+
+    def _review(self, request: ModelRequest, response: ModelResponse, trace: list[BaseMessage]) -> ModelResponse | ModelRequest:
+        """The response to keep, or the request to try again with."""
+        message = response.result[-1] if response.result else None
+        if not (isinstance(message, AIMessage) and message.invalid_tool_calls):
+            return dataclasses.replace(response, result=[*trace, *response.result]) if trace else response
+        trace.extend([*response.result, *_unparsable_call_errors(message)])
+        if message.tool_calls:
+            return dataclasses.replace(response, result=list(trace))
+        attempts = sum(isinstance(m, AIMessage) for m in trace)
+        if attempts > UNPARSABLE_CALL_RETRIES:
+            raise UnparsableToolCallsError(f"The model sent tool calls that could not be parsed {attempts} times in a row")
+        return request.override(messages=[*request.messages, *trace])
+
+    def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
+        trace: list[BaseMessage] = []
+        outcome = self._review(request, handler(request), trace)
+        while isinstance(outcome, ModelRequest):
+            outcome = self._review(request, handler(outcome), trace)
+        return outcome
+
+    async def awrap_model_call(
+        self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
+    ) -> ModelResponse:
+        trace: list[BaseMessage] = []
+        outcome = self._review(request, await handler(request), trace)
+        while isinstance(outcome, ModelRequest):
+            outcome = self._review(request, await handler(outcome), trace)
+        return outcome
+
+
+def _tool_failure(request: ToolCallRequest, exc: Exception) -> ToolMessage:
+    call = request.tool_call
+    logger.exception("Tool %s failed", call["name"])  # called from an except block, so the traceback is logged
+    return ToolMessage(
+        content=f"Error: {call['name']} failed with an internal error ({type(exc).__name__}: {exc}).",
+        name=call["name"],
+        tool_call_id=call["id"],
+        status="error",
+    )
+
+
+class ToolErrors(AgentMiddleware):
+    """A tool that raises gives the model an error result instead of failing the whole turn.
+
+    The model can then tell the shopper it can't look products up right now, and every tool call in
+    the history keeps a result, which providers require.
+    """
+
+    def wrap_tool_call(
+        self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], ToolMessage | Command]
+    ) -> ToolMessage | Command:
+        try:
+            return handler(request)
+        except GraphBubbleUp:
+            raise
+        except Exception as exc:
+            return _tool_failure(request, exc)
+
+    async def awrap_tool_call(
+        self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]
+    ) -> ToolMessage | Command:
+        try:
+            return await handler(request)
+        except GraphBubbleUp:
+            raise
+        except Exception as exc:
+            return _tool_failure(request, exc)
+
+
+def agent_middleware(limits: AgentSettings) -> list[AgentMiddleware]:
     return [
         RecentHistory(limits.history_messages),
+        UnparsableToolCalls(),
+        ToolErrors(),
         # Calls over the limit get an error result instead of running, and the model answers with what it has.
         ToolCallLimitMiddleware(run_limit=limits.max_tool_calls, exit_behavior="continue"),
     ]
@@ -91,7 +203,7 @@ def build_agent(
         model or build_chat_model(settings.llm, settings.openrouter_api_key),
         tools=list(tools),
         system_prompt=load_system_prompt(settings.llm.system_prompt_path),
-        middleware=agent_limits(settings.agent),
+        middleware=agent_middleware(settings.agent),
         checkpointer=checkpointer or InMemorySaver(),
         name="tire_assistant",
     )
@@ -175,7 +287,7 @@ async def astream_turn(agent: CompiledStateGraph, message: str, thread_id: str) 
                 elif isinstance(item, ToolMessage):
                     over_limit = node.startswith(ToolCallLimitMiddleware.__name__)
                     yield _status("results", "Search limit reached" if over_limit else _describe_result(item))
-            if any(isinstance(item, ToolMessage) for item in messages):
+            if messages and isinstance(messages[-1], ToolMessage):
                 yield _status("thinking", "Thinking…")  # the model runs again with the results
 
 
