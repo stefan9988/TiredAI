@@ -28,8 +28,17 @@ LIGHT_TRUCK = "Light Truck"
 CANDIDATES = 50  # at least this many results are taken from each of the dense and BM25 searches before fusion
 # 'model' is wrong in 21% of rows, so it is kept out of what the agent sees.
 HIDDEN_FIELDS = {"model", DOCUMENT_KEY}
+# Numbers sent to the agent as text with their unit: as bare numbers the model misread them (a
+# tread depth of 8/32" became "8,000"). The stored values stay numbers.
+AS_TEXT = {
+    "treadDepth32nds": ("treadDepth", lambda n: f"{n}/32 in"),
+    "mileageWarrantyMiles": ("mileageWarranty", lambda n: f"{n:,} miles"),
+    "recommendations": ("recommendations", lambda n: f"{n}/5"),
+}
 
-Sort = Literal["relevance", "price_asc", "price_desc"]
+Sort = Literal["relevance", "price_asc", "price_desc", "recommendations_desc"]
+# Payload field and descending flag of each sort besides relevance.
+SORT_KEYS = {"price_asc": ("price", False), "price_desc": ("price", True), "recommendations_desc": ("recommendations", True)}
 
 NUMBER = re.compile(r"\d+(?:\.\d+)?")
 PREFIX = re.compile(r"(LT|P)\s*(?=\d)")
@@ -64,6 +73,17 @@ def parse_size(text: str) -> SizeQuery:
     if match := LOOSE_METRIC.fullmatch(size):
         size = f"{match[1]}/{match[2]}R{match[3]}"
     return SizeQuery(size_key(re.sub(r"\s+", "", size)), light_truck)
+
+
+def product_view(payload: dict) -> dict:
+    """A stored product as the agent sees it: hidden fields left out, AS_TEXT fields as text."""
+    product = {}
+    for key, value in payload.items():
+        if key in HIDDEN_FIELDS:
+            continue
+        name, as_text = AS_TEXT.get(key, (key, None))
+        product[name] = as_text(value) if as_text else value
+    return product
 
 
 def speed_rank(rating: str) -> int | None:
@@ -115,6 +135,7 @@ class CatalogSearch:
         performance: str | None = None,
         run_flat: bool | None = None,
         min_speed_rating: str | None = None,
+        min_recommendations: int | None = None,
         sort: Sort = "relevance",
     ) -> dict:
         must: list[models.Condition] = []
@@ -175,6 +196,13 @@ class CatalogSearch:
                 ratings = [r for r in self.speed_ratings if (rank := speed_rank(r)) is not None and rank >= SPEED_ORDER.index(minimum)]
                 match("speedRating", ratings)  # an empty list matches nothing
 
+        if min_recommendations is not None:
+            if not 1 <= min_recommendations <= 5:
+                errors.append(f"min_recommendations must be 1 to 5, not {min_recommendations}.")
+            else:
+                must.append(models.FieldCondition(key="recommendations", range=models.Range(gte=min_recommendations)))
+                filters["recommendations"] = {"min": min_recommendations}
+
         if errors:
             return {"error": " ".join(errors)}
 
@@ -200,27 +228,28 @@ class CatalogSearch:
                 with_payload=True,
             ).points
             if sort != "relevance":
-                # Price order among the most relevant products for the query.
-                points = sorted(points, key=lambda p: p.payload["price"], reverse=sort == "price_desc")[:limit]
+                # Ordered among the most relevant products for the query; ties keep their relevance order.
+                key, descending = SORT_KEYS[sort]
+                points = sorted(points, key=lambda p: p.payload[key], reverse=descending)[:limit]
             order = sort if sort == "relevance" else f"{sort} among the {candidates} most relevant"
         else:
-            # Without a query there is nothing to rank by, so results are ordered by price.
-            direction = models.Direction.DESC if sort == "price_desc" else models.Direction.ASC
+            # Without a query there is nothing to rank by, so relevance means cheapest first.
+            order = "price_asc" if sort == "relevance" else sort
+            key, descending = SORT_KEYS[order]
             points, _ = self.client.scroll(
                 self.collection,
                 scroll_filter=query_filter,
-                order_by=models.OrderBy(key="price", direction=direction),
+                order_by=models.OrderBy(key=key, direction=models.Direction.DESC if descending else models.Direction.ASC),
                 limit=limit,
                 with_payload=True,
             )
-            order = "price_desc" if sort == "price_desc" else "price_asc"
 
         result = {
             "total_matching": total,
             "returned": len(points),
             "order": order,
             "filters": filters,
-            "products": [{k: v for k, v in p.payload.items() if k not in HIDDEN_FIELDS} for p in points],
+            "products": [product_view(p.payload) for p in points],
         }
         if total == 0:
             result["note"] = "No products in the catalog match these filters."
@@ -245,13 +274,17 @@ class SearchArgs(BaseModel):
     performance: str | None = None
     run_flat: bool | None = Field(None, description="true for only run-flat tires, false to exclude them.")
     min_speed_rating: str | None = Field(None, description="Lowest acceptable speed rating, e.g. 'H'.")
-    sort: Sort = Field("relevance", description="'relevance' (needs a query), 'price_asc' or 'price_desc'.")
+    min_recommendations: int | None = Field(None, description="Lowest acceptable store recommendation level, 1 to 5.")
+    sort: Sort = Field(
+        "relevance",
+        description="'relevance' (needs a query), 'price_asc', 'price_desc' or 'recommendations_desc' (most recommended first).",
+    )
 
 
 def make_search_tool(catalog: CatalogSearch) -> BaseTool:
     description = f"""Search the tire catalog. Use it for every question about products, prices or specifications, and answer only from what it returns.
 
-Every filter is a hard constraint: all returned products satisfy all of them. The size is matched exactly after normalizing its formatting, and an LT size returns only light-truck tires. Without a query, results are sorted by price.
+Every filter is a hard constraint: all returned products satisfy all of them. The size is matched exactly after normalizing its formatting, and an LT size returns only light-truck tires. Without a query, results are sorted by price (cheapest first) unless another sort is given.
 
 Allowed values (case-insensitive):
 - season: {', '.join(catalog.seasons)}
@@ -259,7 +292,9 @@ Allowed values (case-insensitive):
 - performance: {', '.join(catalog.performances)}
 - min_speed_rating, slowest to fastest: {', '.join(SPEED_ORDER)}
 
-Returns JSON with total_matching (products matching all filters) and up to {catalog.max_results} products. If total_matching is 0, nothing in the catalog matches."""
+Returns JSON with total_matching (products matching all filters) and up to {catalog.max_results} products. If total_matching is 0, nothing in the catalog matches.
+
+Product fields include available (false: out of stock, never recommend it) and recommendations (the store's recommendation level, from 1/5 to 5/5)."""
 
     def search_tires(**kwargs) -> str:
         return json.dumps(catalog.search(**kwargs), ensure_ascii=False)
@@ -286,6 +321,9 @@ def _money(value) -> str:
     return f"${amount:,.0f}" if amount.is_integer() else f"${amount:,.2f}"
 
 
+SORT_LABELS = {"price_asc": "cheapest first", "price_desc": "most expensive first", "recommendations_desc": "most recommended first"}
+
+
 def describe_search(args: dict) -> str:
     """Status line for a search_tires call, e.g. 'Searching the catalog: 205/60R15 · All Season · up to $60'."""
     parts = [str(args["size"])] if args.get("size") else []
@@ -298,6 +336,8 @@ def describe_search(args: dict) -> str:
         parts.append("no run-flat")
     if args.get("min_speed_rating"):
         parts.append(f"speed rating {args['min_speed_rating']} or higher")
+    if args.get("min_recommendations") is not None:
+        parts.append(f"recommended {args['min_recommendations']}/5 or higher")
     low, high = args.get("min_price"), args.get("max_price")
     if low is not None and high is not None:
         parts.append(f"{_money(low)}–{_money(high)}")
@@ -305,8 +345,8 @@ def describe_search(args: dict) -> str:
         parts.append(f"up to {_money(high)}")
     elif low is not None:
         parts.append(f"from {_money(low)}")
-    if args.get("sort") in ("price_asc", "price_desc"):
-        parts.append("cheapest first" if args["sort"] == "price_asc" else "most expensive first")
+    if args.get("sort") in SORT_LABELS:
+        parts.append(SORT_LABELS[args["sort"]])
     return "Searching the catalog" + (f": {' · '.join(parts)}" if parts else "")
 
 

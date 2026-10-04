@@ -1,8 +1,10 @@
+from collections import Counter
+
 import pandas as pd
 import pytest
 from conftest import raw_frame
 
-from tiredai.preprocessing import PreprocessingError, normalize, preprocess, verify
+from tiredai.preprocessing import PreprocessingError, is_available, normalize, preprocess, recommendation_level, verify
 
 
 def test_converts_typed_fields_and_renames_unit_columns():
@@ -50,6 +52,40 @@ def test_unexpected_format_is_rejected(column, value):
         normalize(raw_frame({column: value}))
 
 
+def test_generated_columns_are_fixed_by_the_sku():
+    skus = ["N889368-99", "N891706-99", "N952097-99"]
+    first = normalize(raw_frame(*({"sku": s} for s in skus)))
+    reordered = normalize(raw_frame(*({"sku": s} for s in reversed(skus))))
+
+    for column in ("available", "recommendations"):
+        assert list(first[column]) == list(reordered[column])[::-1]
+    assert list(first["available"]) == [is_available(s) for s in skus]
+    assert list(first["recommendations"]) == [recommendation_level(s) for s in skus]
+    assert str(first["available"].dtype) == "boolean" and str(first["recommendations"].dtype) == "Int64"
+
+
+def test_generated_columns_follow_the_requested_distribution():
+    skus = [f"N{i}-99" for i in range(10_000)]
+    available = sum(is_available(s) for s in skus) / len(skus)
+    levels = Counter(recommendation_level(s) for s in skus)
+
+    assert 0.78 < available < 0.82
+    assert set(levels) <= {1, 2, 3, 4, 5}
+    assert 3.95 < sum(level * n for level, n in levels.items()) / len(skus) < 4.05
+    # Normal around 4 with spread 0.6: about 20% / 60% / 20% at 3 / 4 / 5.
+    shares = {level: n / len(skus) for level, n in levels.items()}
+    assert 0.17 < shares[3] < 0.23 and 0.56 < shares[4] < 0.64 and 0.17 < shares[5] < 0.23
+
+
+def test_verify_detects_a_changed_generated_value():
+    raw = raw_frame()
+    stored = normalize(raw)
+    stored.loc[0, "recommendations"] = 6
+
+    [problem] = verify(raw, stored)
+    assert problem.startswith("recommendations row 0: stored") and "for sku 'SKU-0'" in problem
+
+
 def test_verify_detects_float_precision_loss():
     raw = raw_frame({"price": "12.34567890123456789"})
 
@@ -77,6 +113,7 @@ def test_preprocess_writes_verified_parquet(write_csv, tmp_path):
     assert str(stored["price"].dtype) == "Float64"
     assert str(stored["treadDepth32nds"].dtype) == "Int64"
     assert str(stored["runFlat"].dtype) == "boolean"
+    assert str(stored["available"].dtype) == "boolean" and str(stored["recommendations"].dtype) == "Int64"
     assert not output.with_name(output.name + ".tmp").exists()
 
 

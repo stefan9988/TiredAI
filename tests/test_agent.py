@@ -73,6 +73,7 @@ def test_project_system_prompt_exists():
     prompt = load_system_prompt(LLMSettings.from_env({}).system_prompt_path)
 
     assert "Size search" in prompt and "Product inquiry" in prompt and "Education" in prompt
+    assert "Recommend only available tires" in prompt and "recommendations_desc" in prompt
 
 
 def test_missing_system_prompt_is_reported(tmp_path):

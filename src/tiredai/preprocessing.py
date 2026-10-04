@@ -8,15 +8,23 @@ Only conversions confirmed to be lossless are applied:
   * treadDepth:      '10/32' -> treadDepth32nds = 10
   * mileageWarranty: '50,000 miles' -> mileageWarrantyMiles = 50000
 
-The Parquet file is read back after writing and every value is checked against the raw CSV.
-If anything does not match, the output is discarded and PreprocessingError is raised.
+Two columns the raw CSV lacks are generated from each product's SKU, so every run gives the same values:
+  * available:       true for about 80% of products (false: out of stock)
+  * recommendations: the store's recommendation level, a whole number 1-5 drawn from a normal
+                     distribution around 4 (spread 0.6)
+
+The Parquet file is read back after writing and every value is checked against the raw CSV (and
+the generated columns against their SKU). If anything does not match, the output is discarded and
+PreprocessingError is raised.
 """
 
+import hashlib
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from statistics import NormalDist
 
 import pandas as pd
 
@@ -26,6 +34,9 @@ DECIMAL = re.compile(r"\d+(?:\.\d+)?")
 TREAD_32NDS = re.compile(r"(\d+)/32")
 MILES = re.compile(r"(\d{1,3}(?:,\d{3})*) miles")
 BOOLEANS = {"true": True, "false": False}
+
+AVAILABLE_SHARE = 0.8
+RECOMMENDATION_LEVELS = NormalDist(mu=4, sigma=0.6)
 
 
 class PreprocessingError(Exception):
@@ -86,6 +97,32 @@ CONVERSIONS = {
 }
 
 
+def sku_fraction(sku: str, column: str) -> float:
+    """A number in (0, 1) fixed by the SKU and column, so generated values never change between runs."""
+    digest = hashlib.sha256(f"{column}:{sku}".encode()).digest()
+    return ((int.from_bytes(digest[:8], "big") >> 11) + 0.5) / 2**53  # 53 bits: exact as a float
+
+
+def is_available(sku: str) -> bool:
+    return sku_fraction(sku, "available") < AVAILABLE_SHARE
+
+
+def recommendation_level(sku: str) -> int:
+    return min(5, max(1, round(RECOMMENDATION_LEVELS.inv_cdf(sku_fraction(sku, "recommendations")))))
+
+
+@dataclass(frozen=True)
+class Generated:
+    dtype: str
+    generate: Callable[[str], object]  # the value for a SKU
+
+
+GENERATED = {
+    "available": Generated("boolean", is_available),
+    "recommendations": Generated("Int64", recommendation_level),
+}
+
+
 def conversion_for(column: str) -> Conversion:
     return CONVERSIONS.get(column, Conversion(column, "string", str, lambda raw, v: raw == v))
 
@@ -111,11 +148,13 @@ def normalize(raw: pd.DataFrame) -> pd.DataFrame:
                     f"Cannot normalize {col} at row {row} (sku {raw.at[row, 'sku']}): {exc}"
                 ) from exc
         columns[conv.target] = pd.array(values, dtype=conv.dtype)
+    for column, gen in GENERATED.items():
+        columns[column] = pd.array([gen.generate(sku) for sku in raw["sku"]], dtype=gen.dtype)
     return pd.DataFrame(columns, index=raw.index)
 
 
 def verify(raw: pd.DataFrame, stored: pd.DataFrame) -> list[str]:
-    expected = [conversion_for(c).target for c in raw.columns]
+    expected = [conversion_for(c).target for c in raw.columns] + list(GENERATED)
     if len(stored) != len(raw):
         return [f"row count {len(stored):,} != {len(raw):,}"]
     if list(stored.columns) != expected:
@@ -133,6 +172,12 @@ def verify(raw: pd.DataFrame, stored: pd.DataFrame) -> list[str]:
                 ok = not pd.isna(value) and conv.matches(text, value)
             if not ok:
                 problems.append(f"{col} row {row}: raw {text!r} -> stored {value!r}")
+    for column, gen in GENERATED.items():
+        if str(stored[column].dtype) != gen.dtype:
+            problems.append(f"{column}: dtype {stored[column].dtype} != {gen.dtype}")
+        for row, (sku, value) in enumerate(zip(raw["sku"], stored[column])):
+            if pd.isna(value) or value != gen.generate(sku):
+                problems.append(f"{column} row {row}: stored {value!r}, expected {gen.generate(sku)!r} for sku {sku!r}")
     return problems
 
 

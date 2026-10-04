@@ -25,8 +25,13 @@ def main() -> None:
         sys.exit(str(exc))
 
     print(summary(raw, normalized).to_string(index=False))
+    levels = normalized["recommendations"].value_counts(normalize=True).sort_index()
+    print(f"\nGenerated: available {normalized['available'].mean():.1%} of products; recommendations "
+          + ", ".join(f"{level}: {share:.1%}" for level, share in levels.items())
+          + f" (mean {normalized['recommendations'].mean():.2f})")
     print(f"\nWrote {len(normalized):,} rows x {len(normalized.columns)} columns to {args.output}")
-    print("Verified: every stored value round-trips to the raw CSV ('N/A' and empty both map to null).")
+    print("Verified: every stored value round-trips to the raw CSV ('N/A' and empty both map to null), "
+          "and the generated columns match their SKUs.")
 
 
 if __name__ == "__main__":

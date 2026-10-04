@@ -1,5 +1,6 @@
 import json
 
+import pandas as pd
 import pytest
 from conftest import FakeEncoder, raw_frame
 from qdrant_client import QdrantClient
@@ -38,14 +39,21 @@ CATALOG = [
      "model": "Deluxe Champion", "size": "5.2-13", "performance": "N/A", "speedRating": "N/A", "price": "99.990000"},
     {"sku": "TRACTOR", "name": "BKT TR-135 8-16 6 Ply (TT)", "brand": "BKT", "model": "TR-135", "size": "8-16",
      "season": "All Season", "carType": "Tractor", "performance": "N/A", "speedRating": "A6/A8", "runFlat": "false",
-     "price": "115.000000"},
+     "treadDepth": "N/A", "mileageWarranty": "", "price": "115.000000"},
 ]  # fmt: skip
+
+# The generated columns, set per product instead of from the SKU: (available, recommendations).
+STOCK = {"CHEAP": (True, 3), "PILOT": (True, 5), "RUNFLAT": (False, 4), "LT-KO2": (True, 4), "SUV-HT": (True, 2),
+         "VINTAGE": (False, 1), "TRACTOR": (True, 3)}  # fmt: skip
 
 
 @pytest.fixture(scope="module")
 def catalog():
+    frame = normalize(raw_frame(*CATALOG))
+    frame["available"] = pd.array([STOCK[sku][0] for sku in frame["sku"]], dtype="boolean")
+    frame["recommendations"] = pd.array([STOCK[sku][1] for sku in frame["sku"]], dtype="Int64")
     client = QdrantClient(":memory:")
-    index_products(client, "tires", products(normalize(raw_frame(*CATALOG))), FakeEncoder())
+    index_products(client, "tires", products(frame), FakeEncoder())
     yield CatalogSearch(client, "tires", FakeEncoder(), max_results=20)
     client.close()
 
@@ -175,6 +183,46 @@ def test_results_hide_model_and_embedded_text(catalog):
     assert product["price"] == 189.99
 
 
+def test_units_are_sent_as_text_and_stock_as_a_flag(catalog):
+    [pilot] = catalog.search(brand="Michelin")["products"]
+    [tractor] = catalog.search(brand="BKT")["products"]
+
+    assert (pilot["treadDepth"], pilot["mileageWarranty"], pilot["recommendations"]) == ("9/32 in", "50,000 miles", "5/5")
+    assert pilot["available"] is True
+    assert "treadDepth32nds" not in pilot and "mileageWarrantyMiles" not in pilot
+    assert "treadDepth" not in tractor and "mileageWarranty" not in tractor  # missing values stay missing
+    stored = catalog.client.scroll("tires", with_payload=True, limit=10)[0]
+    assert {p.payload["sku"]: p.payload["treadDepth32nds"] for p in stored if "treadDepth32nds" in p.payload}["PILOT"] == 9
+
+
+def test_out_of_stock_products_are_returned_flagged(catalog):
+    result = catalog.search(size="205/55R16")
+
+    assert {p["sku"]: p["available"] for p in result["products"]} == {"CHEAP": True, "RUNFLAT": False, "PILOT": True}
+
+
+def test_minimum_recommendation_level(catalog):
+    result = catalog.search(size="205/55R16", min_recommendations=4)
+
+    assert skus(result) == ["RUNFLAT", "PILOT"]
+    assert result["filters"]["recommendations"] == {"min": 4}
+    assert skus(catalog.search(min_recommendations=5)) == ["PILOT"]
+
+
+@pytest.mark.parametrize("level", [0, 6])
+def test_recommendation_level_out_of_range_is_rejected(catalog, level):
+    assert "min_recommendations must be 1 to 5" in catalog.search(min_recommendations=level)["error"]
+
+
+def test_most_recommended_first(catalog):
+    without_query = catalog.search(size="205/55R16", sort="recommendations_desc")
+    with_query = catalog.search(query="tire", size="205/55R16", sort="recommendations_desc")
+
+    assert skus(without_query) == skus(with_query) == ["PILOT", "RUNFLAT", "CHEAP"]
+    assert without_query["order"] == "recommendations_desc"
+    assert with_query["order"] == "recommendations_desc among the 50 most relevant"
+
+
 def test_no_match_says_so(catalog):
     result = catalog.search(size="205/55R16", brand="Kumho")
 
@@ -215,6 +263,7 @@ def test_tool_returns_json_and_lists_allowed_values(catalog):
     assert "up to 20 products" in tool.description
     assert "Light Truck, Passenger, Tractor, Truck/SUV" in tool.description
     assert "A1" in tool.description and "Y" in tool.description
+    assert "available (false: out of stock" in tool.description and "recommendations_desc" in str(tool.args["sort"])
 
 
 def test_tool_rejects_unknown_arguments(catalog):
@@ -244,6 +293,7 @@ def test_no_tool_without_an_index():
         ({"min_price": 100}, "Searching the catalog: from $100"),
         ({"run_flat": True, "min_speed_rating": "H", "sort": "price_asc"}, "Searching the catalog: run-flat · speed rating H or higher · cheapest first"),
         ({"run_flat": "false", "car_type": "Truck/SUV", "sort": "price_desc"}, "Searching the catalog: Truck/SUV · no run-flat · most expensive first"),
+        ({"min_recommendations": 4, "sort": "recommendations_desc"}, "Searching the catalog: recommended 4/5 or higher · most recommended first"),
     ],
 )
 def test_search_is_described_for_the_status_line(args, text):
