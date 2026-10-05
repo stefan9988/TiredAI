@@ -3,8 +3,8 @@
 Each shopper message is one trace, `answer-shopper-message`, and the traces of a conversation are
 grouped into a Langfuse session (the conversation id). The trace's input is the shopper's message and
 its output the answer. Inside it, the LangChain integration records every model call as a generation
-and every search_tires call as a tool; search.py adds the catalog lookup as a retriever, with the
-query embedding inside it.
+and every tool call as a tool; search.py adds the catalog lookup as a retriever, with the query
+embedding inside it, and vehicles.py the vehicle lookup's web search.
 
 Tracing is on when LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY are set (LANGFUSE_BASE_URL picks the
 region or a self-hosted server, LANGFUSE_TRACING_ENVIRONMENT the environment). Without them nothing

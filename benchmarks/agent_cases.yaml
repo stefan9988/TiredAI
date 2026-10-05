@@ -233,6 +233,75 @@
         not_in_catalog: true
         product_terms: [ultragrip 3000]
 
+# --- Vehicle lookup ----------------------------------------------------------------------------------
+# The shopper doesn't know the size but names the vehicle. The lookup answers from the pages captured in
+# vehicle_pages.yaml (scripts/capture_vehicle_pages.py), and the sizes here are the ones those pages list.
+
+- id: vehicle-one-fitment
+  description: The trim has one size, so the agent searches it right away and points to the door sticker.
+  tags: [vehicle]
+  turns:
+    - user: I don't know my tire size. I drive a 2016 Ford Focus S, what tires fit?
+      expect:
+        intent: vehicle_lookup
+        vehicle: {year: 2016, make: Ford, model: Focus}
+        sizes: [195/65R15]
+        must_mention: [[door]]
+
+- id: vehicle-pick-trim
+  description: No trim, and the trims have different sizes, so the agent lists them and asks; the S has one.
+  tags: [vehicle, multi-turn]
+  turns:
+    - user: What size tires does a 2016 Ford Focus take? I don't know my size.
+      expect:
+        intent: vehicle_lookup
+        vehicle: {year: 2016, make: Ford, model: Focus}
+        asks_which_size: true
+        must_mention: [[195/65R15], [215/55R16], [235/40R18, 235/40ZR18]]
+    - user: It's the S.
+      expect:
+        intent: vehicle_lookup
+        vehicle: {year: 2016, make: Ford, model: Focus}
+        sizes: [195/65R15]
+
+- id: vehicle-front-rear
+  description: The only fitment is a pair of different front and rear sizes, and both are searched.
+  tags: [vehicle, staggered]
+  turns:
+    - user: Which tires fit my 2016 Chevrolet Corvette Stingray? It doesn't have the Z51 package.
+      expect:
+        intent: vehicle_lookup
+        vehicle: {year: 2016, make: Chevrolet, model: Corvette}
+        sizes: [245/40R18, 285/35R19]
+        must_mention: [[front], [rear]]
+
+- id: vehicle-missing-year
+  description: Without the year the agent asks for it before looking up; the LE then has one size.
+  tags: [vehicle, multi-turn]
+  turns:
+    - user: I need new tires but don't know the size. It's a Toyota RAV4 LE.
+      expect:
+        intent: vehicle_lookup
+        asks_for_vehicle: true
+        must_mention: [[year]]
+    - user: It's a 2019.
+      expect:
+        intent: vehicle_lookup
+        vehicle: {year: 2019, make: Toyota, model: RAV4}
+        sizes: [225/65R17]
+
+- id: vehicle-not-found
+  description: The Focus wasn't sold in the US in 2021, so the sites only have other years, whose sizes the agent must not use.
+  tags: [vehicle]
+  turns:
+    - user: What tires fit my 2021 Ford Focus?
+      expect:
+        intent: vehicle_lookup
+        vehicle: {year: 2021, make: Ford, model: Focus}
+        vehicle_not_found: true
+        must_mention: [[door], [sidewall]]
+        must_not_mention: [195/65R15, 215/55R16, 215/50R17]
+
 # --- Education ---------------------------------------------------------------------------------------
 
 - id: education-utqg

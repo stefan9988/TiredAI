@@ -262,6 +262,43 @@ test("tool call details are escaped, so data cannot inject markup", () => {
   assert.ok(html.includes("&lt;b&gt;quiet&lt;/b&gt;") && html.includes("&lt;img src=x onerror=alert(1)&gt;"));
 });
 
+const lookup = {
+  id: "l",
+  name: "find_vehicle_tire_sizes",
+  args: { year: 2016, make: "Ford", model: "Focus" },
+  error: null,
+  result: {
+    vehicle: "2016 Ford Focus",
+    sites: ["tiresize.com", "mavis.com"],
+    pages: [
+      { site: "tiresize.com", url: "https://tiresize.com/tires/Ford/Focus/2016/", title: "2016 Ford Focus Tire Sizes", excerpt: "S\n195/65R15" },
+      { site: "mavis.com", url: "javascript:alert(1)", title: "<b>Mavis</b>", excerpt: "<i>RS</i> 235/35ZR19" },
+    ],
+  },
+};
+
+test("a vehicle lookup shows each page the model got, linked to its site", () => {
+  const html = renderToolCalls([lookup]);
+
+  assert.match(html, /^<section class="tool-call"><h3>Vehicle lookup<\/h3>/);
+  assert.ok(html.includes("<dt>year</dt><dd>2016</dd><dt>make</dt><dd>Ford</dd><dt>model</dt><dd>Focus</dd>"));
+  assert.ok(html.includes("<h4>Pages the model got</h4><p>2 for the 2016 Ford Focus from tiresize.com, mavis.com</p>"));
+  assert.ok(html.includes('<h5><a href="https://tiresize.com/tires/Ford/Focus/2016/" target="_blank" rel="noopener noreferrer">2016 Ford Focus Tire Sizes</a> <span class="site">tiresize.com</span></h5><pre>S\n195/65R15</pre>'));
+});
+
+test("a vehicle lookup's pages are escaped, and only web addresses become links", () => {
+  const html = renderToolCalls([lookup]);
+
+  assert.ok(!html.includes("javascript:") && !html.includes("<b>") && !html.includes("<i>"));
+  assert.ok(html.includes('<h5>&lt;b&gt;Mavis&lt;/b&gt; <span class="site">mavis.com</span></h5><pre>&lt;i&gt;RS&lt;/i&gt; 235/35ZR19</pre>'));
+});
+
+test("a vehicle lookup that found nothing says so", () => {
+  const html = renderToolCalls([{ ...lookup, result: { ...lookup.result, pages: [], note: "No page about this vehicle was found on these sites." } }]);
+
+  assert.ok(html.includes('<p>0 for the 2016 Ford Focus from tiresize.com, mavis.com</p><p class="none">No page about this vehicle was found on these sites.</p></section>'));
+});
+
 test("other tools' output is shown as text", () => {
   const html = renderToolCalls([{ id: "c", name: "lookup", args: { q: 1 }, error: null, result: { ok: true } }]);
 

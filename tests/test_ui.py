@@ -38,7 +38,9 @@ def test_chat_page_is_served_at_the_root(client):
     assert 'id="details"' in response.text and 'id="details-body"' in response.text  # the searches side panel
     assert 'id="benchmarks" class="benchmarks-link" href="/?view=benchmarks"' in response.text
     assert 'id="benchmarks-view"' in response.text and "Benchmark results" in response.text
-    assert 'id="guardrail" type="button" class="guardrail-toggle" aria-pressed="true"' in response.text  # on by default
+    assert 'id="guardrail" type="button" class="composer-toggle" aria-pressed="true"' in response.text  # on by default
+    # The web search switch sits right of the guardrail's, also on by default.
+    assert response.text.index('id="guardrail"') < response.text.index('id="web-search" type="button" class="composer-toggle" aria-pressed="true"')
 
 
 def test_a_chat_link_serves_the_chat_page(client):

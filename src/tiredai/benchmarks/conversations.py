@@ -1,23 +1,29 @@
 """Agent benchmark: whole conversations through the real agent, every turn scored with deterministic checks.
 
 The task sends each shopper message through astream_turn, exactly like the chat UI, and records the
-answer, every search_tires call (arguments, filters as applied, returned SKUs) and the time taken.
-The evaluator reads that against the turn's expectations (cases.Expect) and the catalog.
+answer, every search_tires call (arguments, filters as applied, returned SKUs), every vehicle lookup
+(arguments, the tire sizes on the pages it returned) and the time taken. The evaluator reads that
+against the turn's expectations (cases.Expect) and the catalog.
 
 Scores of a conversation, each the mean over the turns it applies to:
 - intent_accuracy: the turn took its flow's route. Education and off-topic: no search. Product
   inquiry: a search whose query names the product (product_terms). Size search: a search with the
   size filter, or, where asking is allowed (may_ask), a question without a search; with an incomplete
-  size (asks_for_size): a question and no search with a guessed size.
+  size (asks_for_size): a question and no search with a guessed size. Vehicle lookup: the vehicle was
+  looked up (in this turn or before), then a search with every size of its fitment (sizes), or a
+  question and no search (asks_which_size), or no search (vehicle_not_found); with the year, make or
+  model missing (asks_for_vehicle): a question and no lookup.
 - retrieval_hit@3: the requested product is in the top 3 of a search; for a size search, a product
   in the top 3 meets the constraints and is in stock (and with cheaper_than_previous costs less than
-  the cheapest product recommended before; when the catalog has nothing cheaper, this doesn't apply).
+  the cheapest product recommended before; when the catalog has nothing cheaper, this doesn't apply);
+  for a vehicle's fitment, every size has an in-stock product in the top 3 of a search with it.
 - filters_applied: the share of the turn's hard constraints each search applied as filters.
 - constraint_correctness: the share of recommended products (named, and not called out of stock)
   that meet the constraints, are in stock, and with cheaper_than_previous cost less than the cheapest
-  product recommended in the previous turn.
+  product recommended in the previous turn; for a vehicle's fitment, that have one of its sizes.
 - groundedness: the share of checkable facts in the answer (prices, SKUs, specs; see answers.py)
-  that the products the agent was shown support.
+  that the products the agent was shown support; after a vehicle lookup, also the tire sizes, which
+  must be on its pages (or be a shown product's or the shopper's).
 - answer_checks: must_mention and must_not_mention phrases, "not in the catalog" for products that
   aren't, naming the requested product, and saying so when nothing cheaper is left.
 - passed: 1 when every score of every turn is 1.
@@ -34,12 +40,14 @@ from langchain_core.messages import AIMessage
 from langfuse import Evaluation
 
 from tiredai.agent import astream_turn, thread_config
-from tiredai.benchmarks.answers import check_facts, contains_words, has_phrase, meets, mentions, numbers, words
+from tiredai.benchmarks.answers import check_facts, contains_words, has_phrase, meets, mentions, numbers, tire_sizes, words
 from tiredai.benchmarks.cases import Expect
 from tiredai.benchmarks.catalog import Catalog
 from tiredai.benchmarks.experiments import item_value
 from tiredai.benchmarks.metrics import mean
 from tiredai.search import parse_size
+from tiredai.vehicles import TOOL_NAME as VEHICLE_TOOL
+from tiredai.vehicles import Vehicle, same_vehicle
 
 SCORES = ["intent_accuracy", "retrieval_hit@3", "filters_applied", "constraint_correctness", "groundedness", "answer_checks"]
 NOT_IN_CATALOG = (
@@ -69,6 +77,18 @@ def search_record(event: dict) -> dict:
         "filters": result.get("filters") if not event["error"] else None,
         "total_matching": result.get("total_matching"),
         "skus": [p["sku"] for p in result.get("products", [])],
+    }
+
+
+def lookup_record(event: dict) -> dict:
+    """A vehicle lookup from the stream's tool_call event: its arguments and the tire sizes on the pages it got."""
+    result = event["result"] if isinstance(event["result"], dict) else {}
+    pages = result.get("pages") or []
+    return {
+        "args": event["args"] if isinstance(event["args"], dict) else {"raw": event["args"]},
+        "error": event["error"],
+        "urls": [p.get("url") for p in pages],
+        "sizes": sorted(set().union(*(tire_sizes(p.get("excerpt") or "") for p in pages))),
     }
 
 
@@ -112,17 +132,20 @@ class ConversationTask:
 
     async def _turn(self, message: str, thread_id: str) -> dict:
         started = time.perf_counter()
-        answer, searches, error = [], [], None
+        answer, searches, lookups, error = [], [], [], None
         try:
             async for event in astream_turn(self.agent, message, thread_id, source="benchmark", metadata=self.metadata):
                 if event["type"] == "token":
                     answer.append(event["text"])
                 elif event["type"] == "tool_call" and event["name"] == "search_tires":
                     searches.append(search_record(event))
+                elif event["type"] == "tool_call" and event["name"] == VEHICLE_TOOL:
+                    lookups.append(lookup_record(event))
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
         seconds = round(time.perf_counter() - started, 2)
-        return {"user": message, "answer": "".join(answer), "searches": searches, "seconds": seconds, "error": error}
+        return {"user": message, "answer": "".join(answer), "searches": searches, "lookups": lookups, "seconds": seconds,
+                "error": error}  # fmt: skip
 
     async def _usage(self, thread_id: str) -> dict:
         state = await self.agent.aget_state(thread_config(thread_id))
@@ -152,6 +175,18 @@ class Context:
     seen: dict[str, dict] = field(default_factory=dict)  # products returned by any search, by SKU
     previous_recommended: list[str] = field(default_factory=list)
     shopper_numbers: set[float] = field(default_factory=set)
+    shopper_sizes: set[str] = field(default_factory=set)  # size keys the shopper wrote
+    lookups: list[dict] = field(default_factory=list)  # vehicle lookups that got pages
+    page_sizes: set[str] = field(default_factory=set)  # size keys on those pages
+
+
+def looked_up(lookup: dict, vehicle: Vehicle) -> bool:
+    args = lookup["args"]
+    try:
+        asked = Vehicle(int(args["year"]), str(args["make"]), str(args["model"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    return same_vehicle(asked, vehicle)
 
 
 def _applied(filters: dict, key: str, value) -> bool:
@@ -201,8 +236,18 @@ def score_turn(catalog: Catalog, expect: Expect, turn: dict, context: Context) -
 
     nothing_cheaper = below is not None and not any(fits(p) for p in catalog)
     context.shopper_numbers |= numbers(turn["user"])
+    context.shopper_sizes |= tire_sizes(turn["user"])
     for s in ok:
         context.seen.update((sku, catalog[sku]) for sku in s["skus"] if sku in catalog)
+    lookups = turn.get("lookups", [])  # results saved before vehicle lookups existed have none
+    for lookup in lookups:
+        if not lookup["error"]:
+            context.lookups.append(lookup)
+            context.page_sizes |= set(lookup["sizes"])
+    fitment = {parse_size(size).key for size in expect.sizes}
+
+    def has_fitment(product: dict) -> bool:
+        return not fitment or (bool(product.get("size")) and parse_size(product["size"]).key in fitment)
 
     # intent_accuracy
     what = _describe(searches)
@@ -211,6 +256,8 @@ def score_turn(catalog: Catalog, expect: Expect, turn: dict, context: Context) -
     elif expect.intent == "product_inquiry":
         score.set("intent_accuracy", any(_query_names(s, expect.product_terms) for s in searches),
                   f"{what}; the query must contain {expect.product_terms}")  # fmt: skip
+    elif expect.intent == "vehicle_lookup":
+        score.set("intent_accuracy", *_vehicle_route(expect, turn, context))
     elif expect.asks_for_size:
         guessed = any(s["filters"].get("size") for s in ok)
         score.set("intent_accuracy", asked and not guessed, f"{what}; {'asked' if asked else 'did not ask'} a question")
@@ -223,6 +270,12 @@ def score_turn(catalog: Catalog, expect: Expect, turn: dict, context: Context) -
     if expect.product_sku:
         hit = any(expect.product_sku in s["skus"][:3] for s in ok)
         score.set("retrieval_hit@3", hit, f"{expect.product_sku} {'in' if hit else 'not in'} the top 3 of a search")
+    elif fitment:
+        top = [catalog[sku] for s in ok for sku in s["skus"][:3] if sku in catalog]
+        found = {parse_size(p["size"]).key for p in top if p.get("available") and p.get("size")}
+        missing = [size for size in expect.sizes if parse_size(size).key not in found]
+        note = f"no in-stock {', '.join(missing)} in the top 3 of a search" if missing else f"in-stock {', '.join(expect.sizes)} in the top 3"
+        score.set("retrieval_hit@3", not missing, note)
     elif expect.intent == "size_search" and not expect.asks_for_size and not (expect.may_ask and not searches) and not nothing_cheaper:
         good = {sku for s in ok for sku in s["skus"][:3] if sku in catalog and fits(catalog[sku])}
         cheaper = f", cheaper than ${below:.2f}" if below is not None else ""
@@ -248,6 +301,7 @@ def score_turn(catalog: Catalog, expect: Expect, turn: dict, context: Context) -
             for sku in mention.skus:  # a mention that fits several products passes if one of them does
                 product = catalog[sku]
                 failed = meets(product, constraints) + ([] if product.get("available") else ["available"])
+                failed += [] if has_fitment(product) else [f"size one of {expect.sizes}"]
                 # Products recommended before may come up again for comparison.
                 if below is not None and sku not in context.previous_recommended and product["price"] >= below:
                     failed.append(f"cheaper than ${below:.2f}")
@@ -261,7 +315,8 @@ def score_turn(catalog: Catalog, expect: Expect, turn: dict, context: Context) -
     context.previous_recommended = [sku for m in recommended for sku in m.skus]
 
     # groundedness
-    facts = check_facts(answer, list(context.seen.values()), context.shopper_numbers)
+    known_sizes = context.page_sizes | context.shopper_sizes if context.lookups else None
+    facts = check_facts(answer, list(context.seen.values()), context.shopper_numbers, known_sizes)
     if facts:
         unsupported = [f"{f.kind} {f.text!r}" for f in facts if not f.supported]
         note = "unsupported: " + ", ".join(unsupported) if unsupported else f"{len(facts)} facts, all supported"
@@ -283,6 +338,27 @@ def score_turn(catalog: Catalog, expect: Expect, turn: dict, context: Context) -
         failed = [label for passed, label in checks if not passed]
         score.set("answer_checks", 1 - len(failed) / len(checks), "failed: " + "; ".join(failed) if failed else "all passed")
     return score
+
+
+def _vehicle_route(expect: Expect, turn: dict, context: Context) -> tuple[bool, str]:
+    """Whether a vehicle lookup turn took its route, and what it did."""
+    searches, lookups = turn["searches"], turn.get("lookups", [])
+    asked = "?" in turn["answer"]
+    did = _describe(searches) + "".join(f"; lookup({', '.join(f'{k}={v!r}' for k, v in l['args'].items())})"
+                                        + (f" -> error: {l['error'][:80]}" if l["error"] else f" -> {len(l['urls'])} pages")
+                                        for l in lookups)  # fmt: skip
+    if expect.asks_for_vehicle:
+        return asked and not lookups and not searches, f"{did}; {'asked' if asked else 'did not ask'} a question"
+    vehicle = expect.vehicle.vehicle()
+    if not any(looked_up(l, vehicle) for l in context.lookups):
+        return False, f"{did}; the {vehicle} was never looked up"
+    if expect.sizes:
+        ok = [s for s in searches if s["filters"] is not None]
+        missing = [size for size in expect.sizes if not any(_applied(s["filters"], "size", size) for s in ok)]
+        return not missing, f"{did}; not searched: {missing}" if missing else did
+    if expect.asks_which_size:
+        return asked and not searches, f"{did}; {'asked' if asked else 'did not ask'} which size"
+    return not searches, did  # vehicle_not_found
 
 
 def score_conversation(catalog: Catalog, expects: list[Expect], turns: list[dict]) -> list[TurnScore]:

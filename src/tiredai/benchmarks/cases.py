@@ -6,13 +6,14 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from tiredai.benchmarks.answers import meets, words
+from tiredai.benchmarks.answers import meets, tire_sizes, words
 from tiredai.benchmarks.catalog import Catalog
 from tiredai.benchmarks.experiments import Case
 from tiredai.search import parse_size
+from tiredai.vehicles import FrozenPages, Vehicle, VehicleLookupError
 
 DATASET = "tiredai-agent"
-Intent = Literal["size_search", "product_inquiry", "education", "off_topic"]
+Intent = Literal["size_search", "product_inquiry", "education", "off_topic", "vehicle_lookup"]
 
 
 class Constraints(BaseModel):
@@ -32,6 +33,17 @@ class Constraints(BaseModel):
 
     def given(self) -> dict:
         return self.model_dump(exclude_none=True)
+
+
+class VehicleSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    year: int
+    make: str
+    model: str
+
+    def vehicle(self) -> Vehicle:
+        return Vehicle(self.year, self.make, self.model)
 
 
 class Expect(BaseModel):
@@ -54,9 +66,27 @@ class Expect(BaseModel):
     must_mention: list[list[str]] = Field(default_factory=list)
     # None of these phrases appear in the answer.
     must_not_mention: list[str] = Field(default_factory=list)
+    # Vehicle lookup: the vehicle the agent must have looked up, in this turn or an earlier one, and what then:
+    vehicle: VehicleSpec | None = None
+    # it has one fitment for the shopper's trim: search these sizes (one, or the front and the rear size);
+    sizes: list[str] = Field(default_factory=list)
+    # it has several: list them and ask which one, no search;
+    asks_which_size: bool = False
+    # no page is about it: no search with a guessed size;
+    vehicle_not_found: bool = False
+    # or the year, make or model is missing: ask for it, no lookup of a guessed vehicle.
+    asks_for_vehicle: bool = False
 
     @model_validator(mode="after")
     def _consistent(self) -> "Expect":
+        outcomes = [bool(self.sizes), self.asks_which_size, self.vehicle_not_found, self.asks_for_vehicle]
+        if self.intent == "vehicle_lookup":
+            if sum(outcomes) != 1:
+                raise ValueError("a vehicle lookup needs one of sizes, asks_which_size, vehicle_not_found or asks_for_vehicle")
+            if not self.asks_for_vehicle and self.vehicle is None:
+                raise ValueError("a vehicle lookup needs the vehicle")
+        elif any(outcomes) or self.vehicle:
+            raise ValueError("vehicle, sizes, asks_which_size, vehicle_not_found and asks_for_vehicle are for vehicle lookups")
         if self.intent == "product_inquiry":
             if not self.product_terms:
                 raise ValueError("a product inquiry needs product_terms")
@@ -102,8 +132,38 @@ def load_cases(path: Path) -> list[AgentCase]:
     return cases
 
 
-def check_cases(cases: list[AgentCase], catalog: Catalog) -> list[str]:
-    """What makes a case wrong or impossible to pass given the catalog."""
+def vehicles(cases: list[AgentCase]) -> list[Vehicle]:
+    """The vehicles the cases look up, each once, in the order of the cases."""
+    found = {}
+    for case in cases:
+        for turn in case.turns:
+            if turn.expect.vehicle:
+                vehicle = turn.expect.vehicle.vehicle()
+                found.setdefault(str(vehicle).lower(), vehicle)
+    return list(found.values())
+
+
+def check_vehicle_turn(where: str, expect: Expect, catalog: Catalog, pages: FrozenPages) -> list[str]:
+    """A vehicle lookup's vehicle has captured pages, and its sizes are on them and in stock in the catalog."""
+    if expect.vehicle is None:
+        return []
+    try:
+        found = pages.pages(expect.vehicle.vehicle()).pages
+    except VehicleLookupError as exc:
+        return [f"{where}: {exc}"]
+    on_pages = set().union(*(tire_sizes(p["excerpt"]) for p in found))
+    problems = []
+    for size in expect.sizes:
+        key = parse_size(size).key
+        if key not in on_pages:
+            problems.append(f"{where}: size {size} is not on the pages captured for the {expect.vehicle.vehicle()}")
+        if not any(p.get("available") and p.get("size") and parse_size(p["size"]).key == key for p in catalog):
+            problems.append(f"{where}: no product in stock has size {size}")
+    return problems
+
+
+def check_cases(cases: list[AgentCase], catalog: Catalog, vehicle_pages: FrozenPages | None = None) -> list[str]:
+    """What makes a case wrong or impossible to pass given the catalog (and the pages captured for vehicle lookups)."""
     problems = []
     sizes = {parse_size(p["size"]).key for p in catalog if p.get("size")}
     values = {field: {str(p.get(field)).lower() for p in catalog} for field in ("season", "brand", "carType", "performance")}
@@ -118,6 +178,8 @@ def check_cases(cases: list[AgentCase], catalog: Catalog) -> list[str]:
                     problems.append(f"{where}: {key} {constraints[key]!r} is not in the catalog")
             if constraints and not any(p.get("available") and not meets(p, constraints) for p in catalog):
                 problems.append(f"{where}: no product in stock meets {constraints}")
+            if vehicle_pages is not None:
+                problems += check_vehicle_turn(where, expect, catalog, vehicle_pages)
             terms = [words(t) for t in expect.product_terms]
             if expect.product_sku:
                 if expect.product_sku not in catalog:

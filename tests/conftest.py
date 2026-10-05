@@ -102,6 +102,16 @@ class ToolCallingModel(RecordingModel):
         yield ChatGenerationChunk(message=chunk)
 
 
+class ToolRecordingModel(ToolCallingModel):
+    """Scripted tool-calling model that records the names of the tools each model call was given."""
+
+    bound: list = Field(default_factory=list)
+
+    def bind_tools(self, tools, **kwargs):
+        self.bound.append([tool.name if hasattr(tool, "name") else tool["function"]["name"] for tool in tools])
+        return self
+
+
 def tool_call(name: str, **args) -> AIMessage:
     return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": f"call-{name}"}])
 

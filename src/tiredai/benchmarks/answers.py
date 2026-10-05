@@ -15,6 +15,8 @@ separate lines). A table row is only about the product it names. Checked facts:
 - SKUs: must be among the products the agent saw.
 - tread depth (n/32), mileage warranty, UTQG and recommendation level (n/5): checked against the owning
   product only, since without one they can be general knowledge.
+- tire sizes, only after a vehicle lookup (`known_sizes`): must be on the pages the lookup returned, a
+  seen product's size or a size the shopper wrote.
 """
 
 import math
@@ -30,6 +32,8 @@ WARRANTY = re.compile(r"\b(\d{1,3}(?:,\d{3})+|\d{2,3}(?:\.\d)?\s?[kK])\s?(?:-|\s
 UTQG = re.compile(r"\b(\d{3}) ?([ABC]{1,2}) ?([ABC])\b")
 RECOMMENDATION = re.compile(r"\b([1-5])\s?/\s?5\b")
 SERVICE = re.compile(r"\b\d{2,3}(?:/\d{2,3})?[A-Z]\d?\b")  # load index and speed rating, e.g. 92V or 121/118Q
+# A metric tire size as pages and answers write it: '205/55R16', 'P225/50R17', '235/40ZR18', '215/55 R16'.
+TIRE_SIZE = re.compile(r"\b(?:P|LT)?\d{3}/\d{2}\s?Z?R\s?\d{2}(?:\.\d)?\b", re.IGNORECASE)
 NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 UNAVAILABLE = ("out of stock", "not in stock", "unavailable", "not available", "sold out", "available: false")
 NO_STOCK_CELL = re.compile(r"\b(no|out|false|unavailable)\b|❌|✗|✖")  # a table's in-stock column saying no
@@ -156,6 +160,11 @@ def mentions(answer: str, seen: list[dict]) -> list[Mention]:
     return found
 
 
+def tire_sizes(text: str) -> set[str]:
+    """The metric tire sizes in the text, as size keys (parse_size), so '235/40ZR18' and '235/40R18' are one."""
+    return {parse_size(match).key for match in TIRE_SIZE.findall(text)}
+
+
 def numbers(text: str) -> set[float]:
     return {float(n.replace(",", "")) for n in NUMBER.findall(text)}
 
@@ -183,8 +192,11 @@ def _miles(text: str) -> int:
     return round(float(text[:-1].strip()) * 1000) if text.endswith("k") else int(text)
 
 
-def check_facts(answer: str, seen: list[dict], shopper_numbers: set[float]) -> list[Fact]:
-    """Every checkable fact in the answer, and whether the products the agent saw support it."""
+def check_facts(answer: str, seen: list[dict], shopper_numbers: set[float], known_sizes: set[str] | None = None) -> list[Fact]:
+    """Every checkable fact in the answer, and whether the products the agent saw support it. Tire sizes are
+    checked only when `known_sizes` is given (size keys from vehicle lookups and the shopper's messages)."""
+    if known_sizes is not None:
+        known_sizes = known_sizes | {parse_size(p["size"]).key for p in seen if p.get("size")}
     by_sku = {p["sku"]: p for p in seen}
     found_mentions = mentions(answer, seen)
     facts = []
@@ -210,6 +222,9 @@ def check_facts(answer: str, seen: list[dict], shopper_numbers: set[float]) -> l
                 facts.append(Fact("price", match.group(0), supported))
             for sku in SKU.findall(line):
                 facts.append(Fact("sku", sku, sku in by_sku))
+            if known_sizes is not None:
+                for match in TIRE_SIZE.finditer(line):
+                    facts.append(Fact("size", match.group(0), parse_size(match.group(0)).key in known_sizes))
             if owner is None:
                 continue
             for match in TREAD.finditer(line):

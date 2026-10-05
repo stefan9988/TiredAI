@@ -18,7 +18,7 @@ from langchain.agents.middleware import (
     hook_config,
 )
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool
 from langchain_openrouter import ChatOpenRouter
@@ -33,6 +33,8 @@ from tiredai.config import AgentSettings, LLMSettings, Settings
 from tiredai.guardrail import REPLIES, Guard, build_guard
 from tiredai.search import describe_results, describe_search
 from tiredai.tracing import trace_turn
+from tiredai.vehicles import TOOL_NAME as VEHICLE_TOOL
+from tiredai.vehicles import describe_lookup, describe_lookup_results
 
 APP_TITLE = "TiredAI"
 # How many times the model is asked again when none of its tool calls could be parsed.
@@ -121,6 +123,56 @@ class TurnContext:
     """Settings of one shopper message, passed to the agent run as its context."""
 
     guardrail: bool = False  # check the message with the guardrail before the model sees it
+    web_search: bool = True  # the model may look vehicles up on the web (the vehicle lookup tool)
+
+
+# Added to the system prompt in place of the vehicle lookup when a turn has web search off.
+WEB_SEARCH_OFF = ("Web search is off for this message, so you can't look up a vehicle's tire sizes. If the shopper "
+                  "doesn't know their size, tell them it is on the sticker inside the driver's door and on the tire's "
+                  "sidewall.")  # fmt: skip
+
+
+def _web_search_off(runtime: Runtime) -> bool:
+    return bool(runtime.context) and not runtime.context.web_search
+
+
+def _without_web_search(request: ModelRequest) -> ModelRequest:
+    tools = [tool for tool in request.tools if getattr(tool, "name", None) != VEHICLE_TOOL]
+    if len(tools) == len(request.tools):
+        return request  # the agent has no vehicle lookup
+    return request.override(tools=tools, system_message=SystemMessage(content=f"{request.system_prompt}\n\n{WEB_SEARCH_OFF}"))
+
+
+def _web_search_refused(request: ToolCallRequest) -> ToolMessage | None:
+    call = request.tool_call
+    if call["name"] != VEHICLE_TOOL or not _web_search_off(request.runtime):
+        return None
+    return ToolMessage(content="Error: web search is off for this message, so vehicles can't be looked up.",
+                       name=call["name"], tool_call_id=call["id"], status="error")  # fmt: skip
+
+
+class WebSearchSwitch(AgentMiddleware):
+    """Takes the vehicle lookup (a web search) away for a turn whose TurnContext has web_search off: the model
+    doesn't get the tool and its system prompt says so (WEB_SEARCH_OFF), and a call to it anyway, e.g. copied
+    from an earlier turn, gets an error result."""
+
+    def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
+        return handler(_without_web_search(request) if _web_search_off(request.runtime) else request)
+
+    async def awrap_model_call(
+        self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
+    ) -> ModelResponse:
+        return await handler(_without_web_search(request) if _web_search_off(request.runtime) else request)
+
+    def wrap_tool_call(
+        self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], ToolMessage | Command]
+    ) -> ToolMessage | Command:
+        return _web_search_refused(request) or handler(request)
+
+    async def awrap_tool_call(
+        self, request: ToolCallRequest, handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]]
+    ) -> ToolMessage | Command:
+        return _web_search_refused(request) or await handler(request)
 
 
 def guard_input(messages: Sequence[BaseMessage], history_messages: int) -> tuple[list[dict], str]:
@@ -265,6 +317,7 @@ def agent_middleware(limits: AgentSettings, guard: Guard | None = None) -> list[
     return [
         *([Guardrail(guard, limits.history_messages)] if guard else []),
         RecentHistory(limits.history_messages),
+        WebSearchSwitch(),
         UnparsableToolCalls(),
         ToolErrors(),
         # Calls over the limit get an error result instead of running, and the model answers with what it has.
@@ -297,6 +350,11 @@ def build_agent(
 
 def has_guardrail(agent: CompiledStateGraph) -> bool:
     return GUARDRAIL_NODE in agent.nodes
+
+
+def tool_names(agent: CompiledStateGraph) -> set[str]:
+    node = agent.nodes.get("tools")
+    return set(getattr(node.bound, "tools_by_name", {})) if node else set()
 
 
 def thread_config(thread_id: str) -> RunnableConfig:
@@ -349,8 +407,9 @@ def _traced_config(thread_id: str, callbacks: list) -> RunnableConfig:
     return {**thread_config(thread_id), "callbacks": callbacks}
 
 
-def _turn_metadata(agent: CompiledStateGraph, metadata: dict | None, guardrail: bool) -> dict:
-    return {**(metadata or {}), "guardrail": guardrail and has_guardrail(agent)}
+def _turn_metadata(agent: CompiledStateGraph, metadata: dict | None, guardrail: bool, web_search: bool) -> dict:
+    return {**(metadata or {}), "guardrail": guardrail and has_guardrail(agent),
+            "web_search": web_search and VEHICLE_TOOL in tool_names(agent)}  # fmt: skip
 
 
 def stream_reply(
@@ -361,12 +420,14 @@ def stream_reply(
     source: str = "cli",
     metadata: dict | None = None,
     guardrail: bool = False,
+    web_search: bool = True,
 ) -> Iterator[str]:
     """Send one shopper message and yield the assistant's answer text as it is generated."""
-    with trace_turn(message, thread_id, source=source, metadata=_turn_metadata(agent, metadata, guardrail)) as turn:
+    metadata = _turn_metadata(agent, metadata, guardrail, web_search)
+    with trace_turn(message, thread_id, source=source, metadata=metadata) as turn:
         answer_text, answer = _AnswerText(), []
         config = _traced_config(thread_id, turn.callbacks)
-        context = TurnContext(guardrail=guardrail)
+        context = TurnContext(guardrail=guardrail, web_search=web_search)
         for chunk, chunk_metadata in agent.stream(_user_input(message), config, stream_mode="messages", context=context):
             if text := answer_text(chunk, chunk_metadata):
                 answer.append(text)
@@ -378,12 +439,18 @@ def _status(stage: str, text: str) -> dict:
     return {"type": "status", "stage": stage, "text": text}
 
 
+# Status lines of each tool: (for its call's arguments, for its result).
+DESCRIPTIONS = {"search_tires": (describe_search, describe_results), VEHICLE_TOOL: (describe_lookup, describe_lookup_results)}
+
+
 def _describe_call(call: dict) -> str:
-    return describe_search(call["args"]) if call["name"] == "search_tires" else f"Running {call['name']}"
+    describe = DESCRIPTIONS.get(call["name"])
+    return describe[0](call["args"]) if describe else f"Running {call['name']}"
 
 
 def _describe_result(message: ToolMessage) -> str:
-    return describe_results(message.content) if message.name == "search_tires" else f"{message.name} finished"
+    describe = DESCRIPTIONS.get(message.name)
+    return describe[1](message.content) if describe else f"{message.name} finished"
 
 
 def tool_call_details(call: dict, result: ToolMessage | None) -> dict:
@@ -425,6 +492,7 @@ async def astream_turn(
     source: str = "chat-stream",
     metadata: dict | None = None,
     guardrail: bool = False,
+    web_search: bool = True,
 ) -> AsyncIterator[dict]:
     """One shopper message as a stream of events for the UI, traced as one Langfuse trace.
 
@@ -432,12 +500,14 @@ async def astream_turn(
     as the agent works (checking: the guardrail looks at the message, when `guardrail` is on and the
     agent has one), {"type": "tool_call", **tool_call_details} when a tool call has its result, and
     {"type": "token", "text": ...} for each chunk of the answer. When the guardrail blocks the message,
-    its reply is the only token, followed by {"type": "guardrail", **decision}.
+    its reply is the only token, followed by {"type": "guardrail", **decision}. With `web_search` off the
+    model can't look vehicles up (WebSearchSwitch).
     """
-    metadata = _turn_metadata(agent, metadata, guardrail)
+    metadata = _turn_metadata(agent, metadata, guardrail, web_search)
     with trace_turn(message, thread_id, source=source, metadata=metadata) as turn:
         answer = []
-        events = _astream_events(agent, message, _traced_config(thread_id, turn.callbacks), metadata["guardrail"])
+        context = TurnContext(guardrail=metadata["guardrail"], web_search=web_search)
+        events = _astream_events(agent, message, _traced_config(thread_id, turn.callbacks), context)
         async for event in events:
             if event["type"] == "token":
                 answer.append(event["text"])
@@ -446,12 +516,13 @@ async def astream_turn(
 
 
 async def _astream_events(
-    agent: CompiledStateGraph, message: str, config: RunnableConfig, guardrail: bool
+    agent: CompiledStateGraph, message: str, config: RunnableConfig, context: TurnContext
 ) -> AsyncIterator[dict]:
+    guardrail = context.guardrail
     yield _status("checking", "Checking the message…") if guardrail else _status("thinking", "Thinking…")
     answer_text = _AnswerText()
     calls = {}  # this turn's tool calls by id, to pair with their results
-    stream = agent.astream(_user_input(message), config, stream_mode=["messages", "updates"], context=TurnContext(guardrail=guardrail))
+    stream = agent.astream(_user_input(message), config, stream_mode=["messages", "updates"], context=context)
     async for mode, chunk in stream:
         if mode == "messages":
             if text := answer_text(*chunk):

@@ -1,6 +1,6 @@
 import pytest
 
-from tiredai.benchmarks.answers import check_facts, meets, mentions, words
+from tiredai.benchmarks.answers import check_facts, meets, mentions, tire_sizes, words
 from tiredai.benchmarks.catalog import Catalog
 
 
@@ -181,3 +181,18 @@ Want a budget?"""
 def test_a_price_bound_is_not_a_product_fact():
     assert facts("The three in-stock options under $90: Nexen Classe Premiere CP672 at $84.64.") == [("price", "$84.64", True)]
     assert facts("Nexen Classe Premiere CP672, just $90.") == [("price", "$90", False)]
+
+
+def test_tire_sizes_are_found_however_they_are_written():
+    text = "S 195/65R15, RS P235/35ZR19 (Y), 215/55 R16 and lt265/70r17; not 92V or 18 inch."
+
+    assert tire_sizes(text) == {"195/65R15", "235/35R19", "215/55R16", "265/70R17"}
+
+
+def test_sizes_are_checked_only_after_a_vehicle_lookup():
+    answer = "Your Focus takes 195/65R15 or 215/50R17, like the Nexen Classe Premiere CP672 205/55R16."
+
+    assert [f.kind for f in check_facts(answer, SEEN, set())] == []
+    facts = check_facts(answer, SEEN, set(), known_sizes={"195/65R15"})
+    # 205/55R16 is the size of a product the agent was shown.
+    assert [(f.text, f.supported) for f in facts if f.kind == "size"] == [("195/65R15", True), ("215/50R17", False), ("205/55R16", True)]

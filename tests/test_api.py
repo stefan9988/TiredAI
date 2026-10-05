@@ -4,18 +4,32 @@ import sqlite3
 import uuid
 
 import pytest
-from conftest import FailingModel, FakeEncoder, ToolCallingModel, fake_model, raw_frame, sse_events, tool_call, unparsable_call
+from conftest import (
+    FailingModel,
+    FakeDecisions,
+    FakeEncoder,
+    ToolCallingModel,
+    ToolRecordingModel,
+    decisions,
+    fake_guard,
+    fake_model,
+    raw_frame,
+    sse_events,
+    tool_call,
+    unparsable_call,
+)
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 from qdrant_client import QdrantClient
 
-from tiredai.agent import SEGMENT_SEPARATOR, build_agent, stream_reply
+from tiredai.agent import SEGMENT_SEPARATOR, WEB_SEARCH_OFF, build_agent, stream_reply
 from tiredai.api import MAX_MESSAGE_CHARS, create_app
 from tiredai.config import AgentSettings, Settings
 from tiredai.documents import products
 from tiredai.preprocessing import normalize
 from tiredai.vectorstore import index_products
+from tiredai.vehicles import TOOL_NAME as VEHICLE_TOOL
 
 PROMPT = "You are a test assistant."
 
@@ -174,6 +188,30 @@ def test_health_reports_a_missing_index(settings):
     assert body["model"] == settings.llm.model
     assert body["vector_store"]["status"] == "unavailable"
     assert "build_index.py" in body["vector_store"]["detail"]
+
+
+def test_health_reports_whether_the_agent_can_look_up_vehicles(settings, tmp_path):
+    with serve(settings, fake_model("unused")) as client:
+        assert client.get("/health").json()["vehicle_lookup"] == {"available": False, "sites": list(settings.vehicle_lookup.sites)}
+
+    lookup = dataclasses.replace(settings.vehicle_lookup, cache_path=tmp_path / "pages.sqlite")
+    with_key = dataclasses.replace(settings, openrouter_api_key="test-key", vehicle_lookup=lookup)
+    with serve(with_key, fake_model("unused"), guard=fake_guard(FakeDecisions(decisions(in_scope=1, manipulation=0, harmful=0)))) as client:
+        assert client.get("/health").json()["vehicle_lookup"]["available"] is True
+
+
+def test_a_message_can_turn_web_search_off(settings, tmp_path):
+    lookup = dataclasses.replace(settings.vehicle_lookup, cache_path=tmp_path / "pages.sqlite")
+    with_key = dataclasses.replace(settings, openrouter_api_key="test-key", vehicle_lookup=lookup)
+    model = ToolRecordingModel(messages=iter([AIMessage(content="Which size?"), AIMessage(content="Which car?")]))
+
+    with serve(with_key, model, guard=fake_guard(FakeDecisions(decisions(in_scope=1, manipulation=0, harmful=0)))) as client:
+        client.post("/chat", json={"message": "Tires for my car", "guardrail": False, "web_search": False})
+        client.post("/chat/stream", json={"message": "Tires for my car", "guardrail": False})
+
+    # No index here, so without the lookup the first message's model call had no tools to bind at all.
+    assert model.bound == [[VEHICLE_TOOL]]
+    assert model.prompts[0][0].content.endswith(WEB_SEARCH_OFF) and WEB_SEARCH_OFF not in model.prompts[1][0].content
 
 
 def test_health_reports_the_indexed_products(settings):

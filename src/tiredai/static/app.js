@@ -29,7 +29,8 @@ const detailsClose = document.querySelector("#details-close");
 const benchmarksLink = document.querySelector("#benchmarks");
 const benchmarksView = document.querySelector("#benchmarks-view");
 const bottom = document.querySelector("#bottom");
-const guardrail = document.querySelector("#guardrail");
+const guardrailButton = document.querySelector("#guardrail");
+const webSearchButton = document.querySelector("#web-search");
 
 // The open chat, also kept in the URL. null for a new chat until its first reply starts.
 let conversationId = null;
@@ -47,49 +48,76 @@ let benchmarksRequest = 0;
 // The results shown, and how each table is sorted ({agent: {key, direction}, ...}), kept while the page is open.
 let benchmarks = null;
 const benchmarkSort = {};
-// The guardrail button is on unless this browser turned it off; every message sends its state.
-const GUARDRAIL_KEY = "tiredai.guardrail";
-let guardrailOn = true;
-// What /health says about the guardrail: {available, model, threshold}; null until it answers.
-let guardrailInfo = null;
 const MAX_INPUT_HEIGHT = 200;
 
 const SEARCH_ICON =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/>' +
   '<path d="m15.5 15.5 5 5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
 
-function showGuardrail() {
-  guardrail.setAttribute("aria-pressed", String(guardrailOn));
-  if (guardrailInfo && !guardrailInfo.available) {
-    guardrail.disabled = true;
-    guardrail.title = "The guardrail is unavailable: it needs OPENROUTER_API_KEY.";
-    return;
-  }
-  const model = guardrailInfo?.model ?? "The guardrail";
-  guardrail.title = guardrailOn
-    ? `Guardrail on: ${model} checks each message first and answers off-topic and adversarial ones itself` +
-      (guardrailInfo ? ` (block score ${guardrailInfo.threshold} or more)` : "") +
-      ". Click to send messages straight to the chat model."
-    : `Guardrail off: messages go straight to the chat model. Click to check them with ${model} first.`;
-}
-
-try {
-  guardrailOn = localStorage.getItem(GUARDRAIL_KEY) !== "off";
-} catch {
-  // No storage (private window, blocked site data): the guardrail starts on.
-}
-showGuardrail();
-
-guardrail.addEventListener("click", () => {
-  guardrailOn = !guardrailOn;
-  showGuardrail();
+// A switch above the message box. It is on unless this browser turned it off, and every message sends
+// its state. `info` is what /health says about the feature ({available, ...}; null until it answers),
+// and `describe(on, info)` gives the button's tooltip.
+function composerToggle(button, storageKey, unavailable, describe) {
+  let on = true;
+  let info = null;
   try {
-    localStorage.setItem(GUARDRAIL_KEY, guardrailOn ? "on" : "off");
+    on = localStorage.getItem(storageKey) !== "off";
   } catch {
-    // The choice still holds until the page is reloaded.
+    // No storage (private window, blocked site data): the switch starts on.
   }
-  input.focus();
-});
+  const show = () => {
+    button.setAttribute("aria-pressed", String(on));
+    button.disabled = Boolean(info && !info.available);
+    button.title = button.disabled ? unavailable : describe(on, info);
+  };
+  button.addEventListener("click", () => {
+    on = !on;
+    show();
+    try {
+      localStorage.setItem(storageKey, on ? "on" : "off");
+    } catch {
+      // The choice still holds until the page is reloaded.
+    }
+    input.focus();
+  });
+  show();
+  return {
+    get on() {
+      return on && !button.disabled;
+    },
+    set info(value) {
+      info = value;
+      show();
+    },
+  };
+}
+
+const guardrail = composerToggle(
+  guardrailButton,
+  "tiredai.guardrail",
+  "The guardrail is unavailable: it needs OPENROUTER_API_KEY.",
+  (on, info) => {
+    const model = info?.model ?? "The guardrail";
+    return on
+      ? `Guardrail on: ${model} checks each message first and answers off-topic and adversarial ones itself` +
+          (info ? ` (block score ${info.threshold} or more)` : "") +
+          ". Click to send messages straight to the chat model."
+      : `Guardrail off: messages go straight to the chat model. Click to check them with ${model} first.`;
+  },
+);
+
+const webSearch = composerToggle(
+  webSearchButton,
+  "tiredai.webSearch",
+  "Web search is unavailable: it needs OPENROUTER_API_KEY.",
+  (on, info) => {
+    const sites = info?.sites?.join(", ") ?? "tire-size sites";
+    return on
+      ? `Web search on: when a shopper doesn't know their tire size, the agent looks the vehicle up on ${sites}. ` +
+          "Click to turn it off."
+      : "Web search off: the agent can't look vehicles up and asks for the tire size instead. Click to turn it on.";
+  },
+);
 
 function setBusy(value) {
   busy = value;
@@ -106,8 +134,8 @@ fetch("/health")
       h.vector_store.status === "ok" ? `${h.vector_store.points.toLocaleString()} tires` : "catalog unavailable";
     meta.textContent = `${h.model} · ${catalog}`;
     meta.classList.toggle("warn", h.vector_store.status !== "ok");
-    guardrailInfo = h.guardrail;
-    showGuardrail();
+    guardrail.info = h.guardrail;
+    webSearch.info = h.vehicle_lookup;
   })
   .catch(() => {
     meta.textContent = "API unreachable";
@@ -362,7 +390,8 @@ async function sendMessage(text) {
       body: JSON.stringify({
         message: text,
         conversation_id: conversationId ?? undefined,
-        guardrail: guardrailOn && !guardrail.disabled,
+        guardrail: guardrail.on,
+        web_search: webSearch.on,
       }),
     });
     if (!response.ok) {

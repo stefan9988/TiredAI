@@ -18,6 +18,7 @@ from tiredai.embeddings import EmbeddingError, Encoder
 from tiredai.preprocessing import normalize
 from tiredai.search import CatalogSearch, make_search_tool
 from tiredai.vectorstore import index_products
+from tiredai.vehicles import TOOL_NAME, FrozenPages, VehicleLookup, make_vehicle_tool
 
 class NamedModel(ToolCallingModel):
     """A scripted model that reports a model name, like ChatOpenRouter does."""
@@ -107,6 +108,24 @@ def test_model_calls_tools_and_retrieval_are_nested_with_their_types(traces, set
     ]  # fmt: skip
     # The tool-call limit's bookkeeping after each model call blocked nothing, so it isn't exported.
     assert not traces.named("ToolCallLimitMiddleware.after_model")
+
+
+def test_a_vehicle_lookup_is_a_retriever_inside_its_tool(traces, settings):
+    pages = [{"site": "tiresize.com", "url": "https://tiresize.com/x", "title": "", "excerpt": "S 195/65R15"}]
+    frozen = FrozenPages(("tiresize.com",), 5, [{"vehicle": {"year": 2016, "make": "Ford", "model": "Focus"}, "captured_at": "", "pages": pages}])
+    call = {"name": TOOL_NAME, "args": {"year": 2016, "make": "Ford", "model": "Focus"}, "id": "c1"}
+    model = NamedModel(messages=iter([AIMessage(content="", tool_calls=[call]), AIMessage(content="195/65R15.")]))
+    agent = build_agent(settings, model=model, tools=[make_vehicle_tool(VehicleLookup(frozen))])
+
+    run_turn(agent, "Tires for my 2016 Focus?", "conversation-1")
+
+    [tool] = traces.named(TOOL_NAME)
+    [retrieval] = traces.named("look-up-vehicle-sizes")
+    assert retrieval.parent.span_id == tool.context.span_id and retrieval.attributes[Attr.OBSERVATION_TYPE] == "retriever"
+    assert json.loads(retrieval.attributes[Attr.OBSERVATION_INPUT]) == {
+        "vehicle": "2016 Ford Focus", "query": "2016 Ford Focus tire size", "sites": ["tiresize.com"]
+    }  # fmt: skip
+    assert json.loads(retrieval.attributes[Attr.OBSERVATION_OUTPUT]) == {"pages": ["https://tiresize.com/x"]}
 
 
 def test_generations_record_the_model_prompt_and_reasoning(traces, settings):

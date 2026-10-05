@@ -1,7 +1,8 @@
 """Agent benchmark: run the conversations in benchmarks/agent_cases.yaml through the agent with each chat model.
 
 Every case is a new conversation played turn by turn through the same streaming path as the chat UI,
-with the search tool on an in-memory index built with the chosen embedding model. Each turn is
+with the search tool on an in-memory index built with the chosen embedding model, and the vehicle
+lookup answering from the pages captured in benchmarks/vehicle_pages.yaml. Each turn is
 scored with deterministic checks against the catalog: intent, retrieval hit@3, filters applied,
 constraint correctness, groundedness and answer checks (see src/tiredai/benchmarks/conversations.py).
 
@@ -32,6 +33,7 @@ from tiredai.benchmarks.metrics import mean, percentile
 from tiredai.config import Settings
 from tiredai.embeddings import EmbeddingError, is_free_model
 from tiredai.search import CatalogSearch, make_search_tool
+from tiredai.vehicles import FrozenPages, VehicleLookup, make_vehicle_tool
 
 LLM_PARAMETERS = ("temperature", "top_p", "max_tokens", "seed", "frequency_penalty", "presence_penalty", "reasoning_effort")
 
@@ -66,7 +68,8 @@ def main() -> None:
 
     catalog = Catalog.load(settings.processed_data_path)
     cases = load_cases(ex.BENCHMARKS_DIR / "agent_cases.yaml")
-    if problems := check_cases(cases, catalog):
+    vehicle_pages = FrozenPages.load(ex.BENCHMARKS_DIR / "vehicle_pages.yaml")
+    if problems := check_cases(cases, catalog, vehicle_pages):
         sys.exit("The cases don't fit the catalog:\n" + "\n".join(f"  {p}" for p in problems))
     print(f"{len(cases)} cases ({sum(len(c.turns) for c in cases)} turns) fit the catalog.")
     if args.check:
@@ -97,7 +100,8 @@ def main() -> None:
     except (EmbeddingError, ValueError) as exc:
         sys.exit(f"Indexing failed: {exc}")
     print(f"  indexed in {time.perf_counter() - started:.0f}s")
-    tools = [make_search_tool(CatalogSearch(client, ex.COLLECTION, encoder, max_results=settings.agent.max_search_results))]
+    tools = [make_search_tool(CatalogSearch(client, ex.COLLECTION, encoder, max_results=settings.agent.max_search_results)),
+             make_vehicle_tool(VehicleLookup(vehicle_pages))]  # fmt: skip
 
     stamp, revision = ex.timestamp(), ex.git_revision()
     prompt = ex.fingerprint(load_system_prompt(settings.llm.system_prompt_path))

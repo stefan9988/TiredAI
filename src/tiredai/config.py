@@ -145,6 +145,38 @@ class GuardrailSettings:
         )
 
 
+DEFAULT_VEHICLE_SITES = ("tiresize.com", "firestonecompleteautocare.com", "mavis.com", "goodyear.com")
+
+
+def _sites(raw: str) -> tuple[str, ...]:
+    sites = tuple(site.strip().lower() for site in raw.split(",") if site.strip())
+    if not sites or any("." not in site or "/" in site or " " in site for site in sites):
+        raise ValueError(raw)
+    return sites
+
+
+@dataclass(frozen=True)
+class VehicleLookupSettings:
+    """The vehicle tire size lookup (see vehicles.py): an OpenRouter web search on a few tire-size sites."""
+
+    sites: tuple[str, ...]  # domains the search is limited to
+    max_results: int  # pages per lookup
+    model: str | None  # the model of the request that carries the search; None: the chat model's
+    timeout_seconds: float
+    cache_path: Path
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str], cache_path: Path) -> "VehicleLookupSettings":
+        timeout = _parsed(env, "VEHICLE_LOOKUP_TIMEOUT_SECONDS", _positive_number, "positive number")
+        return cls(
+            sites=_parsed(env, "VEHICLE_LOOKUP_SITES", _sites, "comma-separated list of domains") or DEFAULT_VEHICLE_SITES,
+            max_results=_parsed(env, "VEHICLE_LOOKUP_MAX_RESULTS", _positive_int, "positive integer") or 5,
+            model=env.get("VEHICLE_LOOKUP_MODEL") or None,
+            timeout_seconds=20.0 if timeout is None else timeout,
+            cache_path=cache_path,
+        )
+
+
 @dataclass(frozen=True)
 class Settings:
     raw_data_path: Path
@@ -163,6 +195,7 @@ class Settings:
     llm: LLMSettings
     agent: AgentSettings
     guardrail: GuardrailSettings
+    vehicle_lookup: VehicleLookupSettings
     conversations_path: Path
     api_host: str
     api_port: int
@@ -187,6 +220,9 @@ class Settings:
             llm=LLMSettings.from_env(os.environ),
             agent=AgentSettings.from_env(os.environ),
             guardrail=GuardrailSettings.from_env(os.environ),
+            vehicle_lookup=VehicleLookupSettings.from_env(
+                os.environ, _path("VEHICLE_LOOKUP_CACHE_PATH", ".cache/vehicle_pages.sqlite")
+            ),
             conversations_path=_path("CONVERSATIONS_DB_PATH", "data/conversations.sqlite"),
             api_host=os.getenv("API_HOST") or "127.0.0.1",
             api_port=_parsed(os.environ, "API_PORT", int, "integer") or 8000,

@@ -201,6 +201,25 @@ function searchResult(result) {
   return html.join("");
 }
 
+// A page's title as a link that opens in a new tab; only web addresses become links.
+function pageLink(page) {
+  const title = escapeHtml(page.title || page.url || "");
+  if (!/^https?:\/\//i.test(page.url ?? "")) return title;
+  return `<a href="${escapeHtml(page.url)}" target="_blank" rel="noopener noreferrer">${title}</a>`;
+}
+
+function lookupResult(result) {
+  const html = [
+    "<h4>Pages the model got</h4>",
+    `<p>${result.pages.length} for the ${escapeHtml(result.vehicle ?? "vehicle")} from ${escapeHtml(formatValue(result.sites))}</p>`,
+  ];
+  if (result.note) html.push(`<p class="none">${escapeHtml(result.note)}</p>`);
+  for (const page of result.pages) {
+    html.push(`<h5>${pageLink(page)} <span class="site">${escapeHtml(page.site ?? "")}</span></h5>`, `<pre>${escapeHtml(page.excerpt ?? "")}</pre>`);
+  }
+  return html.join("");
+}
+
 function toolCall(call, title) {
   const html = [`<h3>${escapeHtml(title)}</h3>`, "<h4>The model asked for</h4>"];
   // Arguments that could not be parsed are kept as the raw text the model sent.
@@ -209,6 +228,8 @@ function toolCall(call, title) {
     html.push("<h4>The model got an error</h4>", `<p class="error">${escapeHtml(call.error)}</p>`);
   } else if (Array.isArray(call.result?.products)) {
     html.push(searchResult(call.result));
+  } else if (Array.isArray(call.result?.pages)) {
+    html.push(lookupResult(call.result));
   } else {
     const output = typeof call.result === "string" ? call.result : JSON.stringify(call.result, null, 2);
     html.push("<h4>The model got</h4>", `<pre>${escapeHtml(output ?? "")}</pre>`);
@@ -216,12 +237,14 @@ function toolCall(call, title) {
   return `<section class="tool-call">${html.join("")}</section>`;
 }
 
+const TOOL_LABELS = { search_tires: "Search", find_vehicle_tire_sizes: "Vehicle lookup" };
+
 // The side panel's view of the tool calls behind an answer: for each, what the model asked for and
 // the error or data it got back, so the answer can be checked against it. All text is escaped.
 export function renderToolCalls(calls) {
   return calls
     .map((call, i) => {
-      const label = call.name === "search_tires" ? "Search" : call.name;
+      const label = TOOL_LABELS[call.name] ?? call.name;
       return toolCall(call, calls.length > 1 ? `${label} ${i + 1} of ${calls.length}` : label);
     })
     .join("");

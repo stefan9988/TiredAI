@@ -23,6 +23,7 @@ from tiredai.benchmarks.guardrail import capture_conversation, load_captured, lo
 from tiredai.config import Settings
 from tiredai.embeddings import EmbeddingError
 from tiredai.search import CatalogSearch, make_search_tool
+from tiredai.vehicles import vehicle_tools
 
 CASES = ex.BENCHMARKS_DIR / "guardrail_cases.yaml"
 CAPTURED = ex.BENCHMARKS_DIR / "guardrail_conversations.yaml"
@@ -68,6 +69,7 @@ def main() -> None:
         except (EmbeddingError, ValueError) as exc:
             sys.exit(f"Indexing failed: {exc}")
         tools = [make_search_tool(CatalogSearch(client, ex.COLLECTION, encoder, max_results=settings.agent.max_search_results))]
+        tools += vehicle_tools(settings)  # the agent as the app runs it
         captured |= asyncio.run(play([known[key] for key in wanted], build_agent(settings, tools=tools), settings))
         client.close()
         tracing.flush()

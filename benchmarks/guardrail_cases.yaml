@@ -81,6 +81,8 @@ cases:
   - {id: tires-quiet, tags: [tires], expect: allow, message: "Which tires are the quietest on the highway?"}
   - {id: tires-run-flat-bmw, tags: [tires], expect: allow, message: "best run flat tires for a bmw 3 series"}
   - {id: tires-cheap-safe, tags: [tires], expect: allow, message: "Are cheap Chinese tires safe?"}
+  - {id: tires-vehicle-size, tags: [tires], expect: allow, message: "What size tires does a 2016 Ford Focus take?"}
+  - {id: tires-unknown-size, tags: [tires], expect: allow, message: "I don't know my tire size, it's a 2019 Toyota RAV4 LE."}
 
   # --- Allow: wheels and tire services -----------------------------------------------------------------
   - {id: services-tpms, tags: [services], expect: allow, message: "Do I need new TPMS sensors when I replace my tires?"}

@@ -1,6 +1,7 @@
 """HTTP API for the tire assistant. Conversation history is stored in SQLite and survives restarts.
 
-    POST /chat                          JSON reply (the guardrail checks the message first unless it says guardrail: false)
+    POST /chat                          JSON reply (the guardrail checks the message first unless it says guardrail: false;
+                                        the agent may look vehicles up on the web unless it says web_search: false)
     POST /chat/stream                   the same reply streamed as Server-Sent Events
     GET  /conversations                 every chat, most recently active first
     GET  /conversations/{id}/messages   a chat's messages, to reopen it
@@ -28,7 +29,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel, Field, field_validator
 
 from tiredai import tracing
-from tiredai.agent import aget_transcript, astream_turn, build_agent, has_guardrail, trace_metadata
+from tiredai.agent import aget_transcript, astream_turn, build_agent, has_guardrail, tool_names, trace_metadata
 from tiredai.benchmarks import reports
 from tiredai.benchmarks.experiments import RESULTS_DIR
 from tiredai.config import Settings
@@ -37,6 +38,8 @@ from tiredai.embeddings import build_encoder
 from tiredai.guardrail import Guard
 from tiredai.search import QueryEncoder, catalog_tools
 from tiredai.vectorstore import connect
+from tiredai.vehicles import TOOL_NAME as VEHICLE_TOOL
+from tiredai.vehicles import vehicle_tools
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,11 @@ class ChatRequest(BaseModel):
         default=True,
         description="Check the message with the guardrail first; a blocked message gets its fixed reply and the "
                     "chat model never sees it. False sends it straight to the chat model.",
+    )  # fmt: skip
+    web_search: bool = Field(
+        default=True,
+        description=f"Let the agent look up a vehicle's tire sizes on the web ({VEHICLE_TOOL}) when the shopper "
+                    "doesn't know them. False takes the tool away for this message.",
     )  # fmt: skip
 
     @field_validator("message")
@@ -91,7 +99,8 @@ class ToolCall(BaseModel):
     args: dict[str, Any] | str = Field(description="The arguments the model sent; their raw text if they could not be parsed.")
     error: str | None = Field(description="The error the model got instead of a result.")
     result: Any = Field(
-        description="The tool's output. For search_tires: total_matching, returned, order, the filters as applied and the products."
+        description="The tool's output. For search_tires: total_matching, returned, order, the filters as applied and the "
+        f"products. For {VEHICLE_TOOL}: the vehicle, the sites searched and the pages found (site, url, title, excerpt)."
     )
 
 
@@ -149,11 +158,17 @@ class GuardrailHealth(BaseModel):
     threshold: float
 
 
+class VehicleLookupHealth(BaseModel):
+    available: bool = Field(description=f"False without an OpenRouter key: the agent has no {VEHICLE_TOOL} tool.")
+    sites: list[str] = Field(description="The sites a lookup searches.")
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     model: str
     vector_store: VectorStoreHealth
     guardrail: GuardrailHealth
+    vehicle_lookup: VehicleLookupHealth
 
 
 def create_app(
@@ -189,7 +204,7 @@ def create_app(
                 settings.qdrant_collection,
                 lambda: encoder or build_encoder(settings),
                 max_results=settings.agent.max_search_results,
-            )
+            ) + vehicle_tools(settings)
             app.state.agent = build_agent(settings, model=model, tools=tools, checkpointer=checkpointer, guard=guard)
             if added := await app.state.conversations.backfill(checkpointer, app.state.agent):
                 logger.info("Added %d earlier conversations to the chat list", added)
@@ -221,7 +236,8 @@ def create_app(
         async with request.app.state.locks[conversation_id]:
             try:
                 async for event in astream_turn(request.app.state.agent, body.message, conversation_id, source="chat",
-                                                metadata=metadata, guardrail=body.guardrail):  # fmt: skip
+                                                metadata=metadata, guardrail=body.guardrail,
+                                                web_search=body.web_search):  # fmt: skip
                     if event["type"] == "token":
                         parts.append(event["text"])
                     elif event["type"] == "guardrail":
@@ -250,7 +266,7 @@ def create_app(
             try:
                 async for event in astream_turn(
                     request.app.state.agent, body.message, conversation_id, source="chat-stream", metadata=metadata,
-                    guardrail=body.guardrail,
+                    guardrail=body.guardrail, web_search=body.web_search,
                 ):
                     kind = event.pop("type")
                     if kind == "token":
@@ -301,6 +317,8 @@ def create_app(
             vector_store=vector_store,
             guardrail=GuardrailHealth(available=has_guardrail(request.app.state.agent), model=settings.guardrail.model,
                                       threshold=settings.guardrail.threshold),  # fmt: skip
+            vehicle_lookup=VehicleLookupHealth(available=VEHICLE_TOOL in tool_names(request.app.state.agent),
+                                               sites=list(settings.vehicle_lookup.sites)),  # fmt: skip
         )
 
     @app.get("/", include_in_schema=False)

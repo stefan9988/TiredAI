@@ -524,6 +524,21 @@ body {
   overflow-wrap: anywhere;
 }
 
+.tool-call h5 {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tool-call h5 a {
+  color: inherit;
+}
+
+.tool-call h5 .site {
+  color: var(--muted);
+  font-weight: 400;
+}
+
 .tool-call pre {
   margin: 0;
   padding: 8px 10px;
@@ -766,6 +781,7 @@ body {
 /* Above the message box, aligned with its left edge. */
 .composer-tools {
   display: flex;
+  gap: 6px;
   max-width: 760px;
   margin: 0 auto 8px;
 }
@@ -791,7 +807,7 @@ body {
   outline-offset: -1px;
 }
 
-.guardrail-toggle {
+.composer-toggle {
   display: inline-flex;
   flex: none;
   align-items: center;
@@ -809,7 +825,7 @@ body {
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 
-.guardrail-toggle svg {
+.composer-toggle svg {
   width: 15px;
   height: 15px;
   fill: none;
@@ -819,31 +835,31 @@ body {
   stroke-linejoin: round;
 }
 
-.guardrail-toggle[aria-pressed="true"] {
+.composer-toggle[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--accent) 30%, transparent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent);
 }
 
-.guardrail-toggle[aria-pressed="true"] .off,
-.guardrail-toggle[aria-pressed="false"] .on {
+.composer-toggle[aria-pressed="true"] .off,
+.composer-toggle[aria-pressed="false"] .on {
   display: none;
 }
 
-.guardrail-toggle:hover:not(:disabled) {
+.composer-toggle:hover:not(:disabled) {
   border-color: var(--border);
 }
 
-.guardrail-toggle[aria-pressed="true"]:hover:not(:disabled) {
+.composer-toggle[aria-pressed="true"]:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
-.guardrail-toggle:focus-visible {
+.composer-toggle:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 
-.guardrail-toggle:disabled {
+.composer-toggle:disabled {
   opacity: 0.5;
   cursor: default;
 }

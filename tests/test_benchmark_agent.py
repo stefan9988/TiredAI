@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from qdrant_client import QdrantClient
 
 from tiredai.agent import build_agent
-from tiredai.benchmarks.cases import AgentCase, Expect, check_cases, load_cases
+from tiredai.benchmarks.cases import AgentCase, Expect, check_cases, load_cases, vehicles
 from tiredai.benchmarks.catalog import Catalog
 from tiredai.benchmarks.conversations import ConversationTask, Context, conversation_evaluator, score_turn
 from tiredai.benchmarks.experiments import BENCHMARKS_DIR
@@ -17,6 +17,7 @@ from tiredai.documents import products
 from tiredai.preprocessing import normalize
 from tiredai.search import CatalogSearch, make_search_tool
 from tiredai.vectorstore import index_products
+from tiredai.vehicles import TOOL_NAME, FrozenPages, VehicleLookup, make_vehicle_tool
 
 
 def tire(sku, name, size, price, **fields) -> dict:
@@ -233,8 +234,15 @@ def test_committed_cases_cover_every_flow():
     intents = {t.expect.intent for c in cases for t in c.turns}
 
     assert len(cases) >= 20
-    assert intents == {"size_search", "product_inquiry", "education", "off_topic"}
+    assert intents == {"size_search", "product_inquiry", "education", "off_topic", "vehicle_lookup"}
     assert any(len(c.turns) > 1 for c in cases)
+
+
+def test_every_committed_vehicle_has_captured_pages():
+    captured = FrozenPages.load(BENCHMARKS_DIR / "vehicle_pages.yaml")
+    wanted = vehicles(load_cases(BENCHMARKS_DIR / "agent_cases.yaml"))
+
+    assert wanted and [str(v) for v in wanted if captured.row(v) is None] == []
 
 
 @pytest.fixture
@@ -357,3 +365,168 @@ def test_the_requested_product_may_be_named_as_the_shopper_named_it():
 
     assert scores(expect, turn("The Classe Premiere 205/55R16 costs $84.64.", found))["answer_checks"] == 1
     assert scores(expect, turn("The Classe Premiere costs $84.64.", found))["answer_checks"] == 0  # which size?
+
+
+# --- Vehicle lookup ----------------------------------------------------------------------------------
+
+VEHICLE_CATALOG = Catalog(
+    [
+        tire("FOCUS", "Kumho Solus TA31 195/65R15 91H", "195/65R15", 79.99),
+        tire("FRONT", "Michelin Pilot Sport 4S 245/40ZR18 97Y XL", "245/40ZR18", 289.99, season="Summer"),
+        tire("REAR", "Michelin Pilot Sport 4S 285/35ZR19 103Y XL", "285/35ZR19", 359.99, season="Summer"),
+        tire("OTHER", "Nexen N5000 Platinum 205/55R16 91H", "205/55R16", 89.99),
+    ]
+)
+FOCUS = {"year": 2016, "make": "Ford", "model": "Focus"}
+FOCUS_SIZES = ["195/65R15", "215/50R17", "215/55R16", "235/40R18"]
+CORVETTE = {"year": 2016, "make": "Chevrolet", "model": "Corvette"}
+
+
+def lookup(sizes=FOCUS_SIZES, *, error=None, **vehicle) -> dict:
+    """A recorded vehicle lookup: its arguments and the sizes on the pages it got."""
+    return {"args": vehicle or FOCUS, "error": error, "urls": [] if error else ["https://tiresize.com/x"], "sizes": [] if error else list(sizes)}
+
+
+def vturn(answer: str, searches=(), lookups=(), user: str = "message") -> dict:
+    return {"user": user, "answer": answer, "searches": list(searches), "lookups": list(lookups), "seconds": 1.0, "error": None}
+
+
+def vscores(*pairs) -> dict[str, float]:
+    """Scores of the last of several (expect, turn) pairs, played in one conversation."""
+    context, result = Context(), None
+    for expect, played in pairs:
+        result = score_turn(VEHICLE_CATALOG, Expect.model_validate(expect), played, context)
+    return result.scores
+
+
+ONE_FITMENT = {"intent": "vehicle_lookup", "vehicle": FOCUS, "sizes": ["195/65R15"]}
+PAIR = {"intent": "vehicle_lookup", "vehicle": CORVETTE, "sizes": ["245/40R18", "285/35R19"]}
+WHICH = {"intent": "vehicle_lookup", "vehicle": FOCUS, "asks_which_size": True}
+
+
+def test_a_vehicle_with_one_fitment_is_looked_up_then_searched_in_that_size():
+    answer = "The S takes 195/65R15 (tiresize.com). The Kumho Solus TA31 is $79.99."
+    searched = vscores((ONE_FITMENT, vturn(answer, [search(["FOCUS"], size="195/65R15")], [lookup()])))
+    not_searched = vscores((ONE_FITMENT, vturn("The S takes 195/65R15.", [], [lookup()])))
+    from_memory = vscores((ONE_FITMENT, vturn(answer, [search(["FOCUS"], size="195/65R15")])))
+
+    assert searched == {"intent_accuracy": 1, "retrieval_hit@3": 1, "constraint_correctness": 1, "groundedness": 1}
+    assert not_searched["intent_accuracy"] == 0
+    assert from_memory["intent_accuracy"] == 0  # never looked up
+
+
+def test_a_front_and_rear_pair_needs_a_search_for_each_size():
+    lookups = [lookup(["245/40R18", "285/35R19"], **CORVETTE)]
+    both = vscores((PAIR, vturn("Front 245/40ZR18, rear 285/35ZR19.", [search(["FRONT"], size="245/40ZR18"), search(["REAR"], size="285/35R19")], lookups)))
+    front_only = vscores((PAIR, vturn("Front 245/40ZR18.", [search(["FRONT"], size="245/40ZR18")], lookups)))
+
+    assert both["intent_accuracy"] == 1 and both["retrieval_hit@3"] == 1
+    assert front_only["intent_accuracy"] == 0 and front_only["retrieval_hit@3"] == 0
+
+
+def test_several_fitments_are_listed_and_asked_about_without_searching():
+    asked = vscores((WHICH, vturn("Which trim is it: S (195/65R15) or SE (215/55R16)?", [], [lookup()])))
+    searched = vscores((WHICH, vturn("Which trim? Here are 195/65R15 tires.", [search(["FOCUS"], size="195/65R15")], [lookup()])))
+
+    assert asked == {"intent_accuracy": 1, "groundedness": 1}
+    assert searched["intent_accuracy"] == 0
+
+
+def test_a_lookup_from_an_earlier_turn_counts_for_the_size_the_shopper_then_picks():
+    result = vscores(
+        (WHICH, vturn("Which trim is it?", [], [lookup()])),
+        (ONE_FITMENT, vturn("For the S: Kumho Solus TA31 195/65R15, $79.99.", [search(["FOCUS"], size="195/65R15")], user="It's the S.")),
+    )
+
+    assert result == {"intent_accuracy": 1, "retrieval_hit@3": 1, "constraint_correctness": 1, "groundedness": 1}
+
+
+def test_a_missing_year_is_asked_for_not_guessed():
+    expect = {"intent": "vehicle_lookup", "asks_for_vehicle": True}
+
+    assert vscores((expect, vturn("What year is your RAV4?")))["intent_accuracy"] == 1
+    guessed = vturn("Here are the sizes?", [], [lookup(year=2019, make="Toyota", model="RAV4")])
+    assert vscores((expect, guessed))["intent_accuracy"] == 0
+
+
+def test_a_vehicle_not_found_must_not_be_searched_with_a_guessed_size():
+    expect = {"intent": "vehicle_lookup", "vehicle": {**FOCUS, "year": 2021}, "vehicle_not_found": True}
+    other_years = lookup(year=2021, make="Ford", model="Focus")
+
+    assert vscores((expect, vturn("I couldn't find the 2021 Focus. Check the sticker inside the driver's door.", [], [other_years])))["intent_accuracy"] == 1
+    assert vscores((expect, vturn("Try these.", [search(["FOCUS"], size="195/65R15")], [other_years])))["intent_accuracy"] == 0
+
+
+def test_a_failed_lookup_is_not_a_lookup():
+    result = vscores((ONE_FITMENT, vturn("Here are 195/65R15 tires.", [search(["FOCUS"], size="195/65R15")], [lookup(error="down")])))
+
+    assert result["intent_accuracy"] == 0
+
+
+def test_recommendations_must_have_a_size_of_the_fitment():
+    answer = "The Kumho Solus TA31 is $79.99, or the Nexen N5000 Platinum for $89.99."
+    result = vscores((ONE_FITMENT, vturn(answer, [search(["FOCUS"], size="195/65R15"), search(["OTHER"], size="205/55R16")], [lookup()])))
+
+    assert result["constraint_correctness"] == 0.5
+
+
+def test_after_a_lookup_sizes_must_be_on_its_pages_or_from_the_shopper():
+    answer = "The S takes 195/65R15, the RS 235/35R19, and you wrote 225/45R17."
+    result = vscores((WHICH, vturn(answer + " Which one?", [], [lookup()], user="Is it 225/45R17?")))
+
+    assert result["groundedness"] == pytest.approx(2 / 3)  # 235/35R19 is not on the pages
+
+
+@pytest.mark.parametrize(
+    "expect, message",
+    [
+        ({"intent": "vehicle_lookup", "vehicle": FOCUS}, "needs one of sizes"),
+        ({"intent": "vehicle_lookup", "vehicle": FOCUS, "sizes": ["195/65R15"], "asks_which_size": True}, "needs one of sizes"),
+        ({"intent": "vehicle_lookup", "sizes": ["195/65R15"]}, "needs the vehicle"),
+        ({"intent": "size_search", "vehicle": FOCUS}, "are for vehicle lookups"),
+        ({"intent": "education", "asks_for_vehicle": True}, "are for vehicle lookups"),
+    ],
+)
+def test_inconsistent_vehicle_expectations_are_rejected(expect, message):
+    with pytest.raises(ValidationError, match=message):
+        Expect.model_validate(expect)
+
+
+def test_vehicle_cases_must_have_captured_pages_listing_sizes_in_stock():
+    def case(expect: dict) -> AgentCase:
+        return AgentCase(id="v", description="", turns=[{"user": "x", "expect": expect}])
+
+    pages = FrozenPages(("tiresize.com",), 5, [{"vehicle": FOCUS, "captured_at": "", "pages": [
+        {"site": "tiresize.com", "url": "https://tiresize.com/x", "title": "", "excerpt": "S 195/65R15\nSE 205/55R16\nST 235/40ZR18"}]}])  # fmt: skip
+    catalog = Catalog([*VEHICLE_CATALOG, tire("GONE", "Gone Tire 235/40R18 95W", "235/40R18", 150.0, available=False)])
+
+    problems = check_cases(
+        [
+            case(ONE_FITMENT),  # fine
+            case({**ONE_FITMENT, "sizes": ["215/50R17"]}),  # not on the pages
+            case({**ONE_FITMENT, "sizes": ["235/40R18"]}),  # on them as 235/40ZR18, but out of stock
+            case({**ONE_FITMENT, "vehicle": CORVETTE}),  # never captured
+        ],
+        catalog,
+        pages,
+    )
+
+    assert problems == [
+        "v turn 1: size 215/50R17 is not on the pages captured for the 2016 Ford Focus",
+        "v turn 1: no product in stock has size 215/50R17",
+        "v turn 1: no product in stock has size 235/40R18",
+        "v turn 1: no pages were captured for the 2016 Chevrolet Corvette (run scripts/capture_vehicle_pages.py)",
+    ]
+
+
+def test_the_task_records_each_vehicle_lookup_with_the_sizes_on_its_pages(settings):
+    pages = FrozenPages(("tiresize.com",), 5, [{"vehicle": FOCUS, "captured_at": "", "pages": [
+        {"site": "tiresize.com", "url": "https://tiresize.com/x", "title": "", "excerpt": "S 195/65R15\nST P235/40ZR18"}]}])  # fmt: skip
+    model = ToolCallingModel(messages=iter([tool_call(TOOL_NAME, **FOCUS), AIMessage(content="Which trim?")]))
+    task = ConversationTask(build_agent(settings, model=model, tools=[make_vehicle_tool(VehicleLookup(pages))]), metadata={})
+
+    output = asyncio.run(task(item={"input": {"turns": ["Tires for my 2016 Focus?"]}}))
+
+    [played] = output["turns"]
+    assert played["searches"] == []
+    assert played["lookups"] == [{"args": FOCUS, "error": None, "urls": ["https://tiresize.com/x"], "sizes": ["195/65R15", "235/40R18"]}]
