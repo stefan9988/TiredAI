@@ -374,5 +374,5 @@ export function renderBenchmarks(data, sort = {}) {
       : `<p class="none">No results yet. Run <code>${escapeHtml(section.command)}</code>.</p>`;
     return `<section class="bench"><h2>${escapeHtml(section.title)}</h2><p class="about">${escapeHtml(section.about)}</p>${body}</section>`;
   });
-  return `<h1>Benchmarks</h1>${sections.join("")}<p class="about">Scores are averages over the cases. Hover a column name for what it measures; click it to sort.</p>`;
+  return `<h1>Benchmark results</h1>${sections.join("")}<p class="about">Scores are averages over the cases. Hover a column name for what it measures; click it to sort.</p>`;
 }

@@ -36,7 +36,7 @@ def test_chat_page_is_served_at_the_root(client):
     assert 'id="new-chat"' in response.text and 'id="chats"' in response.text
     assert 'id="details"' in response.text and 'id="details-body"' in response.text  # the searches side panel
     assert 'id="benchmarks" class="benchmarks-link" href="/?view=benchmarks"' in response.text
-    assert 'id="benchmarks-view"' in response.text
+    assert 'id="benchmarks-view"' in response.text and "Benchmark results" in response.text
 
 
 def test_a_chat_link_serves_the_chat_page(client):

@@ -310,6 +310,7 @@ test("benchmark tables: a row per model, best scores marked, everything escaped"
     retrieval: { ...METRICS.retrieval, rows: [] },
   });
 
+  assert.ok(html.startsWith("<h1>Benchmark results</h1>"));
   assert.ok(html.includes("<strong>&lt;b&gt;ling&lt;/b&gt;</strong>"));
   assert.ok(html.includes('<td class="num best">90.0%</td><td class="num">100.0%</td>')); // all 100%: no winner
   assert.ok(html.includes('<td class="num">50.0%</td>'));
