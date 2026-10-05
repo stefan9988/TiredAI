@@ -4,7 +4,8 @@ import hashlib
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import batched
 from pathlib import Path
 from typing import Protocol
@@ -80,11 +81,17 @@ class EmbeddingCache:
         self._db.close()
 
 
+def is_free_model(model: str) -> bool:
+    return model.endswith(":free")
+
+
 class OpenRouterDense:
     """Embeddings from the OpenRouter API, cached on disk.
 
     Free models allow 20 requests per minute and 50 per day (1000 with 10+ purchased credits), shared
-    across all free models, so requests are paced and every vector is cached.
+    across all free models, so their requests are paced and sent one at a time (see build_dense).
+    Paid models aren't held to those limits, so up to `concurrency` batches are requested at once.
+    Every vector is cached either way.
     """
 
     BATCH_SIZE = 256  # provider maximum per request
@@ -98,6 +105,7 @@ class OpenRouterDense:
         query_prefix: str = "query: ",
         document_prefix: str = "passage: ",
         client: httpx.Client | None = None,
+        concurrency: int = 1,
         min_interval: float = 3.1,
         max_retries: int = 5,
         sleep: Callable[[float], None] = time.sleep,
@@ -108,9 +116,11 @@ class OpenRouterDense:
         self.document_prefix = document_prefix
         self.client = client or httpx.Client(timeout=120)
         self.headers = {"Authorization": f"Bearer {api_key}", "X-Title": "TiredAI"}
+        self.concurrency = concurrency
         self.min_interval = min_interval
         self.max_retries = max_retries
         self.sleep = sleep
+        self._pace = threading.Lock()
         self._last_request = float("-inf")
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -123,13 +133,40 @@ class OpenRouterDense:
         keys = [EmbeddingCache.key(self.model, text) for text in inputs]
         vectors = self.cache.get_many(keys)
         missing = [(key, text) for key, text in dict(zip(keys, inputs)).items() if key not in vectors]
-        for chunk in batched(missing, self.BATCH_SIZE):
-            fetched = self._request([text for _, text in chunk])
+        for chunk, fetched in self._fetch(list(batched(missing, self.BATCH_SIZE))):
             # Round to float32 like the cache does, so fresh and cached vectors are identical.
             new = {key: np.asarray(v, dtype=np.float32).tolist() for (key, _), v in zip(chunk, fetched)}
             self.cache.put_many(new)
             vectors.update(new)
         return [vectors[key] for key in keys]
+
+    def _fetch(self, chunks: list[tuple]) -> Iterator[tuple[tuple, list[list[float]]]]:
+        """Each batch with its vectors as its request finishes, at most `concurrency` requests at a time.
+
+        After a failure no new requests start; batches already fetched are still yielded (so the
+        caller caches them) before the error is raised.
+        """
+        if self.concurrency == 1 or len(chunks) <= 1:
+            for chunk in chunks:
+                yield chunk, self._request([text for _, text in chunk])
+            return
+        with ThreadPoolExecutor(max_workers=min(self.concurrency, len(chunks))) as pool:
+            requests = {pool.submit(self._request, [text for _, text in chunk]): chunk for chunk in chunks}
+            error = None
+            for future in as_completed(requests):
+                if future.cancelled():
+                    continue
+                try:
+                    fetched = future.result()
+                except Exception as exc:
+                    if error is None:
+                        error = exc
+                        for waiting in requests:
+                            waiting.cancel()  # only those not started yet
+                    continue
+                yield requests[future], fetched
+            if error is not None:
+                raise error
 
     def _request(self, inputs: list[str]) -> list[list[float]]:
         for attempt in range(self.max_retries + 1):
@@ -151,10 +188,11 @@ class OpenRouterDense:
         raise AssertionError("unreachable")
 
     def _wait_for_rate_limit(self) -> None:
-        wait = self._last_request + self.min_interval - time.monotonic()
-        if wait > 0:
-            self.sleep(wait)
-        self._last_request = time.monotonic()
+        with self._pace:  # requests start at least min_interval apart, whichever thread sends them
+            wait = self._last_request + self.min_interval - time.monotonic()
+            if wait > 0:
+                self.sleep(wait)
+            self._last_request = time.monotonic()
 
 
 class BM25Sparse:
@@ -194,7 +232,16 @@ def build_dense(settings: Settings) -> DenseEmbedder:
     if settings.embedding_provider == "openrouter":
         if not settings.openrouter_api_key:
             raise ValueError("EMBEDDING_PROVIDER=openrouter requires OPENROUTER_API_KEY")
-        return OpenRouterDense(settings.embedding_model, settings.openrouter_api_key, EmbeddingCache(settings.embedding_cache_path))
+        cache = EmbeddingCache(settings.embedding_cache_path)
+        if is_free_model(settings.embedding_model):
+            return OpenRouterDense(settings.embedding_model, settings.openrouter_api_key, cache)
+        return OpenRouterDense(
+            settings.embedding_model,
+            settings.openrouter_api_key,
+            cache,
+            concurrency=settings.embedding_concurrency,
+            min_interval=0,
+        )
     raise ValueError(f"Unknown EMBEDDING_PROVIDER {settings.embedding_provider!r}, expected 'fastembed' or 'openrouter'")
 
 

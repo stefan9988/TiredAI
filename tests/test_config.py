@@ -1,6 +1,6 @@
 import pytest
 
-from tiredai.config import ROOT, AgentSettings, LLMSettings
+from tiredai.config import ROOT, AgentSettings, LLMSettings, Settings
 
 
 def test_llm_defaults_leave_model_parameters_unset():
@@ -83,3 +83,16 @@ def test_agent_limits_are_parsed_from_env():
 def test_agent_limits_must_be_positive_integers(name, value):
     with pytest.raises(ValueError, match=name):
         AgentSettings.from_env({name: value})
+
+
+def test_embedding_concurrency_defaults_to_8_and_must_be_positive(monkeypatch):
+    monkeypatch.delenv("EMBEDDING_CONCURRENCY", raising=False)
+    monkeypatch.setattr("tiredai.config.load_dotenv", lambda path: None)
+    assert Settings.load().embedding_concurrency == 8
+
+    monkeypatch.setenv("EMBEDDING_CONCURRENCY", "3")
+    assert Settings.load().embedding_concurrency == 3
+
+    monkeypatch.setenv("EMBEDDING_CONCURRENCY", "0")
+    with pytest.raises(ValueError, match="EMBEDDING_CONCURRENCY"):
+        Settings.load()

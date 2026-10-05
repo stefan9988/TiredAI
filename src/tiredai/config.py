@@ -125,6 +125,7 @@ class Settings:
     sparse_model: str
     model_cache_dir: Path
     embedding_cache_path: Path
+    embedding_concurrency: int  # parallel requests to a paid OpenRouter embedding model
     openrouter_api_key: str | None
     llm: LLMSettings
     agent: AgentSettings
@@ -147,6 +148,7 @@ class Settings:
             sparse_model=os.getenv("SPARSE_MODEL") or "Qdrant/bm25",
             model_cache_dir=_path("MODEL_CACHE_DIR", ".cache/fastembed"),
             embedding_cache_path=_path("EMBEDDING_CACHE_PATH", ".cache/embeddings.sqlite"),
+            embedding_concurrency=_parsed(os.environ, "EMBEDDING_CONCURRENCY", _positive_int, "positive integer") or 8,
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
             llm=LLMSettings.from_env(os.environ),
             agent=AgentSettings.from_env(os.environ),

@@ -103,7 +103,7 @@ The agent has one tool, `search_tires`, and a system prompt that defines the thr
 ### Free tier only
 
 - **Chat model:** any OpenRouter model with tool calling; the default is `nvidia/nemotron-3-ultra-550b-a55b:free`. All generation parameters are optional, and unset ones are not sent.
-- **Embeddings:** local CPU embeddings with fastembed (`BAAI/bge-small-en-v1.5`, the default), or OpenRouter's free `nvidia/nemotron-3-embed-1b:free`. Free OpenRouter models allow 50 requests a day, so API vectors are cached in SQLite: indexing the catalog takes 40 requests once, and rebuilds are free.
+- **Embeddings:** local CPU embeddings with fastembed (`BAAI/bge-small-en-v1.5`, the default), or OpenRouter's free `nvidia/nemotron-3-embed-1b:free`. Free OpenRouter models allow 50 requests a day, so API vectors are cached in SQLite: indexing the catalog takes 40 requests once, and rebuilds are free. Free models get one request at a time, paced to their rate limit. Paid OpenRouter models aren't held to those limits, so batches are requested `EMBEDDING_CONCURRENCY` at a time (default 8). With `qwen/qwen3-embedding-8b`, that cut embedding the catalog from about 7 minutes to under a minute.
 - **Vector store:** Qdrant instead of Pinecone. It runs as a local on-disk store with no account or server, supports dense and sparse vectors with server-side fusion, payload filters and ordering, and can point to a Qdrant server or Qdrant Cloud through `QDRANT_URL`.
 
 ## Getting started
@@ -173,6 +173,7 @@ All settings live in `.env`; `.env.example` lists every option with comments. Th
 | `LLM_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b:free` | Any OpenRouter model that supports tool calling |
 | `LLM_TEMPERATURE`, `LLM_MAX_TOKENS`, ... | unset | Optional generation parameters; unset ones are not sent |
 | `EMBEDDING_PROVIDER` | `fastembed` | `fastembed` (local) or `openrouter`; rebuild the index after changing it |
+| `EMBEDDING_CONCURRENCY` | `8` | Requests sent at once when indexing with a paid OpenRouter model (`:free` models always send one at a time) |
 | `QDRANT_PATH` / `QDRANT_URL` | `data/vectorstore` | Local store, or a Qdrant server URL |
 | `AGENT_HISTORY_MESSAGES` | `10` | Chat messages the model sees |
 | `AGENT_MAX_TOOL_CALLS` | `5` | Searches per shopper message |
