@@ -70,11 +70,15 @@ def memory_index(settings: Settings, progress=None) -> tuple[QdrantClient, Encod
     return client, encoder
 
 
-def git_revision() -> str:
-    """The commit the benchmark ran on, marked -dirty when files were changed since."""
+def git_revision(root: Path = ROOT) -> str:
+    """The commit the benchmark ran on, marked -dirty when tracked files were changed since.
+
+    Untracked files don't count: earlier result files in benchmarks/results/ aren't code.
+    """
     try:
-        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True)
-        status = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True, check=True)
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=root, capture_output=True, text=True, check=True)
+        status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=root, capture_output=True,
+                                text=True, check=True)  # fmt: skip
     except (OSError, subprocess.CalledProcessError):
         return "unknown"
     return commit.stdout.strip() + ("-dirty" if status.stdout.strip() else "")

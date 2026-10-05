@@ -167,6 +167,44 @@ Without flags, both use the models in `.env`. `--check` only validates the cases
 
 **Cost.** One agent run is roughly 100 chat requests. `:free` models run one conversation at a time, and the 50 requests a day of a free account won't cover a full run. One retrieval run per model and ranking sends about 1,900 observations and scores to Langfuse; `--local` skips that.
 
+### Results
+
+The runs of 2026-10-05. The full reports are in [`benchmarks/results/`](benchmarks/results/), with every case's output and the reason for each failed check, and in the Langfuse datasets `tiredai-agent` and `tiredai-retrieval`. Each model ran once; LLM answers vary between runs, so `--repeat 3` gives a steadier comparison.
+
+**Agent** ([report](benchmarks/results/20261005T112306Z-agent.md); 27 conversations, 32 turns; commit `a246a3f`, embeddings `qwen/qwen3-embedding-8b`):
+
+| Chat model | Passed | Intent | Hit@3 | Filters | Constraints | Grounded | Answers | s / turn |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `inclusionai/ling-3.0-flash-vl` (current) | **96.3%** | **100%** | 100% | 100% | 100% | 99.6% | **100%** | 3.9 |
+| `qwen/qwen3-30b-a3b-instruct-2507` | 92.6% | 98.1% | 100% | 100% | 100% | **100%** | 93.8% | **3.8** |
+| `nvidia/nemotron-3-ultra-550b-a55b:free` | 85.2% | 87.0% | 100% | 100% | 100% | **100%** | **100%** | 17 |
+
+- **ling-3.0-flash-vl** failed one conversation: it said the Milestar costs "$1.31 more" than the GT Radial ($83.95 vs. $82.71, so $1.24 more).
+- **qwen3-30b** failed two. It answered "show me something cheaper" from the earlier results without searching again, though the system prompt says to search again. It also said the nonexistent Michelin Pilot Sport 9 "is not available in 245/40R18", which suggests it exists in other sizes, instead of saying it isn't in the catalog.
+- **nemotron-3-ultra:free** failed four conversations, all on `503 Service temporarily overloaded` from Nvidia's free endpoint after three attempts. 15 of its 27 conversations needed a retry. Every conversation that completed passed. It is also about four times slower per turn.
+- No model recommended an out-of-stock tire, missed a hard constraint in its searches, or stated a price or spec the search didn't return. The one exception is ling's arithmetic slip.
+
+**Retrieval** ([report](benchmarks/results/20261005T104820Z-retrieval.md); 158 product queries and 30 descriptive ones; commit `c5f5148`):
+
+| Embedding model | Ranking | Hit@1 | MRR | P@10 | nDCG@10 |
+| --- | --- | ---: | ---: | ---: | ---: |
+| `nvidia/nemotron-3-embed-1b:free` | hybrid | 98.7% | 99.4% | 86.3% | 90.2% |
+| `openai/text-embedding-3-small` | hybrid | 95.6% | 97.7% | 89.7% | 92.8% |
+| `qwen/qwen3-embedding-8b` (current) | hybrid | 93.7% | 96.7% | 86.7% | 90.4% |
+| `BAAI/bge-small-en-v1.5` (local) | hybrid | 89.2% | 94.4% | 84.3% | 89.6% |
+| `nvidia/nemotron-3-embed-1b:free` | dense | **99.4%** | **99.7%** | 90.7% | 93.7% |
+| `openai/text-embedding-3-small` | dense | 90.5% | 94.3% | **93.0%** | **96.7%** |
+| `qwen/qwen3-embedding-8b` | dense | 93.0% | 95.8% | 88.3% | 92.2% |
+| `BAAI/bge-small-en-v1.5` | dense | 70.3% | 78.7% | 84.3% | 91.7% |
+| BM25 alone | sparse | 97.5% | 98.5% | 83.7% | 86.4% |
+
+Hit@3 and hit@10 are left out here: they are 97.5–100% for every run except bge-small dense (85.4% and 96.8%).
+
+- **Named products are nearly solved.** BM25 alone ranks the right product first 97.5% of the time, because product names are mostly distinctive words and sizes. These queries separate the embedding models only a little.
+- **Hybrid ranking protects against a weak embedding model.** bge-small alone reaches an MRR of 78.7%, and with BM25 it reaches 94.4%. On the other hand, adding BM25 lowers the descriptive scores of every model by 2–4 points of nDCG@10, because keyword matches push down tires that match the meaning.
+- **For the app's hybrid search,** the free nemotron-3-embed-1b scores best on named products, and text-embedding-3-small best on descriptive needs. The current qwen3-embedding-8b is in the middle on both. Switching the index's model would be a separate decision; this benchmark is the evidence for it.
+- The times per query (0.4–0.6 s) come from the in-memory Qdrant index and Langfuse tracing, not from the app's search. They aren't a latency comparison.
+
 ## Getting started
 
 ### With Docker

@@ -1,5 +1,6 @@
 import dataclasses
 import json
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -178,3 +179,20 @@ def test_each_case_is_a_trace_with_the_agents_turns_inside_and_its_scores(traces
                                                 "groundedness", "passed"}  # fmt: skip
     assert {s["trace_id"] for s in scores_sent} == {format(turn_span.context.trace_id, "032x")}
     client.close()
+
+
+def test_runs_record_their_commit_and_whether_tracked_files_changed(tmp_path):
+    def git(*args):
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=tmp_path, check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "code.py").write_text("x = 1\n")
+    git("add", "code.py")
+    git("commit", "-q", "-m", "first")
+    commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=tmp_path, capture_output=True, text=True).stdout.strip()
+
+    (tmp_path / "result.json").write_text("[]")  # untracked: a result file, not a code change
+    assert ex.git_revision(tmp_path) == commit
+    (tmp_path / "code.py").write_text("x = 2\n")
+    assert ex.git_revision(tmp_path) == f"{commit}-dirty"
+    assert ex.git_revision(tmp_path / "missing") == "unknown"
