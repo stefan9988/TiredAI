@@ -27,6 +27,7 @@ from langgraph.types import Command
 
 from tiredai.config import AgentSettings, LLMSettings, Settings
 from tiredai.search import describe_results, describe_search
+from tiredai.tracing import trace_turn
 
 APP_TITLE = "TiredAI"
 # How many times the model is asked again when none of its tool calls could be parsed.
@@ -206,7 +207,7 @@ def build_agent(
         system_prompt=load_system_prompt(settings.llm.system_prompt_path),
         middleware=agent_middleware(settings.agent),
         checkpointer=checkpointer or InMemorySaver(),
-        name="tire_assistant",
+        name="tire_agent",  # "agent" in the name makes Langfuse type the agent loop as an agent
     )
 
 
@@ -243,12 +244,33 @@ class _AnswerText:
         return SEGMENT_SEPARATOR + text if previous not in (None, self.step) else text
 
 
-def stream_reply(agent: CompiledStateGraph, message: str, thread_id: str) -> Iterator[str]:
+def trace_metadata(settings: Settings) -> dict:
+    """What a trace records about the setup that answered it, to compare models and limits."""
+    return {
+        "llm_model": settings.llm.model,
+        "embedding_model": f"{settings.embedding_provider}:{settings.embedding_model}",
+        "history_messages": settings.agent.history_messages,
+        "max_tool_calls": settings.agent.max_tool_calls,
+        "max_search_results": settings.agent.max_search_results,
+    }
+
+
+def _traced_config(thread_id: str, callbacks: list) -> RunnableConfig:
+    return {**thread_config(thread_id), "callbacks": callbacks}
+
+
+def stream_reply(
+    agent: CompiledStateGraph, message: str, thread_id: str, *, source: str = "cli", metadata: dict | None = None
+) -> Iterator[str]:
     """Send one shopper message and yield the assistant's answer text as it is generated."""
-    answer_text = _AnswerText()
-    for chunk, metadata in agent.stream(_user_input(message), thread_config(thread_id), stream_mode="messages"):
-        if text := answer_text(chunk, metadata):
-            yield text
+    with trace_turn(message, thread_id, source=source, metadata=metadata or {}) as turn:
+        answer_text, answer = _AnswerText(), []
+        config = _traced_config(thread_id, turn.callbacks)
+        for chunk, chunk_metadata in agent.stream(_user_input(message), config, stream_mode="messages"):
+            if text := answer_text(chunk, chunk_metadata):
+                answer.append(text)
+                yield text
+        turn.finish("".join(answer))
 
 
 def _status(stage: str, text: str) -> dict:
@@ -294,19 +316,34 @@ def _tool_calls(message: AIMessage) -> list[dict]:
     return [*message.tool_calls, *message.invalid_tool_calls]
 
 
-async def astream_turn(agent: CompiledStateGraph, message: str, thread_id: str) -> AsyncIterator[dict]:
-    """One shopper message as a stream of events for the UI.
+async def astream_turn(
+    agent: CompiledStateGraph,
+    message: str,
+    thread_id: str,
+    *,
+    source: str = "chat-stream",
+    metadata: dict | None = None,
+) -> AsyncIterator[dict]:
+    """One shopper message as a stream of events for the UI, traced as one Langfuse trace.
 
     Yields {"type": "status", "stage": "thinking" | "searching" | "results", "text": ...} as the
     agent works, {"type": "tool_call", **tool_call_details} when a tool call has its result, and
     {"type": "token", "text": ...} for each chunk of the answer.
     """
+    with trace_turn(message, thread_id, source=source, metadata=metadata or {}) as turn:
+        answer = []
+        async for event in _astream_events(agent, message, _traced_config(thread_id, turn.callbacks)):
+            if event["type"] == "token":
+                answer.append(event["text"])
+            yield event
+        turn.finish("".join(answer))
+
+
+async def _astream_events(agent: CompiledStateGraph, message: str, config: RunnableConfig) -> AsyncIterator[dict]:
     yield _status("thinking", "Thinking…")
     answer_text = _AnswerText()
     calls = {}  # this turn's tool calls by id, to pair with their results
-    async for mode, chunk in agent.astream(
-        _user_input(message), thread_config(thread_id), stream_mode=["messages", "updates"]
-    ):
+    async for mode, chunk in agent.astream(_user_input(message), config, stream_mode=["messages", "updates"]):
         if mode == "messages":
             if text := answer_text(*chunk):
                 yield {"type": "token", "text": text}
@@ -328,9 +365,11 @@ async def astream_turn(agent: CompiledStateGraph, message: str, thread_id: str) 
                 yield _status("thinking", "Thinking…")  # the model runs again with the results
 
 
-async def astream_reply(agent: CompiledStateGraph, message: str, thread_id: str) -> AsyncIterator[str]:
+async def astream_reply(
+    agent: CompiledStateGraph, message: str, thread_id: str, *, source: str = "chat", metadata: dict | None = None
+) -> AsyncIterator[str]:
     """Only the answer text of astream_turn."""
-    async for event in astream_turn(agent, message, thread_id):
+    async for event in astream_turn(agent, message, thread_id, source=source, metadata=metadata):
         if event["type"] == "token":
             yield event["text"]
 

@@ -1,4 +1,5 @@
 import json
+import os
 import zlib
 from collections import Counter
 
@@ -9,6 +10,9 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGenerationChunk
 from pydantic import Field
 from qdrant_client import models
+
+# Tests never send traces: empty keys keep tracing off, and load_dotenv doesn't override them with .env.
+os.environ.update(LANGFUSE_PUBLIC_KEY="", LANGFUSE_SECRET_KEY="")
 
 # One valid raw CSV row, as text exactly like the catalog stores it.
 RAW_ROW = {
@@ -87,7 +91,8 @@ class ToolCallingModel(RecordingModel):
             {"name": c["name"], "args": args, "id": c["id"], "index": i, "type": "tool_call_chunk"}
             for i, (c, args) in enumerate(calls)
         ]
-        yield ChatGenerationChunk(message=AIMessageChunk(content=message.content, tool_call_chunks=chunks))
+        chunk = AIMessageChunk(content=message.content, additional_kwargs=message.additional_kwargs, tool_call_chunks=chunks)
+        yield ChatGenerationChunk(message=chunk)
 
 
 def tool_call(name: str, **args) -> AIMessage:

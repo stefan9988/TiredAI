@@ -15,6 +15,7 @@ import numpy as np
 from fastembed import SparseTextEmbedding, TextEmbedding
 from qdrant_client import models
 
+from tiredai import tracing
 from tiredai.config import Settings
 
 OPENROUTER_EMBEDDINGS_URL = "https://openrouter.ai/api/v1/embeddings"
@@ -25,6 +26,8 @@ class EmbeddingError(Exception):
 
 
 class DenseEmbedder(Protocol):
+    model: str
+
     def embed_documents(self, texts: list[str]) -> list[list[float]]: ...
 
     def embed_query(self, text: str) -> list[float]: ...
@@ -34,6 +37,7 @@ class FastEmbedDense:
     """Local ONNX model, runs on CPU."""
 
     def __init__(self, model: str, cache_dir: Path):
+        self.model = model
         self._model = TextEmbedding(model, cache_dir=str(cache_dir))
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -223,7 +227,16 @@ class Encoder:
         return self.dense.embed_documents(texts), self.sparse.embed_documents(texts)
 
     def encode_query(self, text: str) -> tuple[list[float], models.SparseVector]:
-        return self.dense.embed_query(text), self.sparse.embed_query(text)
+        with tracing.client().start_as_current_observation(
+            as_type="embedding", name="embed-query", input=text, model=self.dense.model
+        ) as embedding:
+            try:
+                dense, sparse = self.dense.embed_query(text), self.sparse.embed_query(text)
+            except Exception as exc:
+                embedding.update(level="ERROR", status_message=str(exc))
+                raise
+            embedding.update(output={"dense_dimensions": len(dense), "sparse_terms": len(sparse.indices)})
+        return dense, sparse
 
 
 def build_dense(settings: Settings) -> DenseEmbedder:

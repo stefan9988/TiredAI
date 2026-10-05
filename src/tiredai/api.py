@@ -26,7 +26,8 @@ from langchain_core.language_models import BaseChatModel
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel, Field, field_validator
 
-from tiredai.agent import aget_transcript, astream_reply, astream_turn, build_agent
+from tiredai import tracing
+from tiredai.agent import aget_transcript, astream_reply, astream_turn, build_agent, trace_metadata
 from tiredai.config import Settings
 from tiredai.conversations import Conversation, ConversationStore
 from tiredai.embeddings import build_encoder
@@ -97,9 +98,11 @@ def create_app(
 ) -> FastAPI:
     """Build the app; `model` and `encoder` replace the configured models (used by tests)."""
     settings = settings or Settings.load()
+    metadata = trace_metadata(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        tracing.start()
         settings.conversations_path.parent.mkdir(parents=True, exist_ok=True)
         async with AsyncSqliteSaver.from_conn_string(str(settings.conversations_path)) as checkpointer:
             # Create the history tables now, so an unusable database fails at startup, not on the first chat.
@@ -128,6 +131,7 @@ def create_app(
             finally:
                 if app.state.vector_store is not None:
                     app.state.vector_store.close()
+                tracing.flush()
 
     app = FastAPI(title="TiredAI", summary="Tire shopping assistant", lifespan=lifespan)
 
@@ -146,7 +150,12 @@ def create_app(
         await request.app.state.conversations.record_turn(conversation_id, body.message)
         async with request.app.state.locks[conversation_id]:
             try:
-                parts = [text async for text in astream_reply(request.app.state.agent, body.message, conversation_id)]
+                parts = [
+                    text
+                    async for text in astream_reply(
+                        request.app.state.agent, body.message, conversation_id, source="chat", metadata=metadata
+                    )
+                ]
             except Exception as exc:
                 logger.exception("Model request failed")
                 raise HTTPException(502, f"Model request failed: {exc}") from exc
@@ -167,7 +176,9 @@ def create_app(
         parts = []
         async with request.app.state.locks[conversation_id]:
             try:
-                async for event in astream_turn(request.app.state.agent, body.message, conversation_id):
+                async for event in astream_turn(
+                    request.app.state.agent, body.message, conversation_id, source="chat-stream", metadata=metadata
+                ):
                     kind = event.pop("type")
                     if kind == "token":
                         parts.append(event["text"])

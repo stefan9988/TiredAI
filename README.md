@@ -37,6 +37,7 @@ It runs entirely on free tiers: an open model on OpenRouter, free or local embed
 | `src/tiredai/search.py` | The `search_tires` tool: hard filters, hybrid ranking, sorting, and what the agent sees of each product |
 | `src/tiredai/agent.py` | The agent: OpenRouter chat model, system prompt, middleware for limits and tool errors, streaming |
 | `src/tiredai/api.py` | FastAPI server: chat (JSON and streamed), saved conversations, health, the chat page |
+| `src/tiredai/tracing.py` | Langfuse tracing: one trace per message, grouped by conversation |
 | `src/tiredai/static/` | The chat UI: plain HTML, CSS and JavaScript, with no build step |
 | `prompts/system.md` | System prompt: the three request types and the rules for product facts, searching and the conversation |
 
@@ -105,6 +106,34 @@ The agent has one tool, `search_tires`, and a system prompt that defines the thr
 - **Chat model:** any OpenRouter model with tool calling; the default is `nvidia/nemotron-3-ultra-550b-a55b:free`. All generation parameters are optional, and unset ones are not sent.
 - **Embeddings:** local CPU embeddings with fastembed (`BAAI/bge-small-en-v1.5`, the default), or OpenRouter's free `nvidia/nemotron-3-embed-1b:free`. Free OpenRouter models allow 50 requests a day, so API vectors are cached in SQLite: indexing the catalog takes 40 requests once, and rebuilds are free. Free models get one request at a time, paced to their rate limit. Paid OpenRouter models aren't held to those limits, so batches are requested `EMBEDDING_CONCURRENCY` at a time (default 8). With `qwen/qwen3-embedding-8b`, that cut embedding the catalog from about 7 minutes to under a minute.
 - **Vector store:** Qdrant instead of Pinecone. It runs as a local on-disk store with no account or server, supports dense and sparse vectors with server-side fusion, payload filters and ordering, and can point to a Qdrant server or Qdrant Cloud through `QDRANT_URL`.
+
+## Observability
+
+Tracing uses [Langfuse](https://langfuse.com) through its LangChain integration (Python SDK 4.16). To turn it on, set `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` in `.env`; `LANGFUSE_BASE_URL` picks the region or a self-hosted server. Without keys nothing is recorded or sent. The server log says at startup whether tracing is on, and warns if the keys are rejected or the server can't be reached.
+
+Each shopper message is one trace, and the traces of a conversation form one Langfuse session, so a whole chat can be replayed in the Sessions view. A turn with a search looks like this:
+
+```
+answer-shopper-message            span        input: the shopper's message, output: the answer
+└─ tire_agent                     agent       the agent loop
+   ├─ model                       chain
+   │  └─ ChatOpenRouter           generation  full prompt, answer or tool calls, reasoning, model, tokens
+   ├─ tools                       chain
+   │  └─ search_tires             tool        arguments as the model sent them, the JSON it got back
+   │     └─ retrieve-products     retriever   filters as applied, number of matches, ranking with scores
+   │        └─ embed-query        embedding   the query text and the embedding model
+   └─ model                       chain
+      └─ ChatOpenRouter           generation  the answer written from the search results
+```
+
+The model calls and the catalog lookup are separate observations, so you can inspect retrieval and generation on their own. You can see what the model was asked, what the search applied and returned, and what the model answered from it. Each trace also carries:
+
+- **Tags:** where the message came from: `chat-stream` (the chat page), `chat` (the JSON endpoint) or `cli`.
+- **Metadata:** the chat model, the embedding model and the agent limits, to compare setups.
+- **Environment:** from `LANGFUSE_TRACING_ENVIRONMENT`, so development traces stay apart from others.
+- **Errors:** a failed turn or query embedding is marked as an error, with the message. When searches go over the limit, the step that blocked them stays in the trace with the error results; otherwise that bookkeeping step is left out.
+
+Token usage is recorded for every generation. Langfuse calculates cost only for models in its price list, so to see cost for an OpenRouter model, add a model definition with its prices under Project Settings > Models in Langfuse. API keys are never part of a trace.
 
 ## Getting started
 
@@ -180,6 +209,9 @@ All settings live in `.env`; `.env.example` lists every option with comments. Th
 | `AGENT_MAX_SEARCH_RESULTS` | `20` | Products returned by each search |
 | `API_HOST` / `API_PORT` | `127.0.0.1` / `8000` | Server address; with Docker, `API_PORT` is the port opened on your machine |
 | `SYSTEM_PROMPT_PATH` | `prompts/system.md` | The system prompt |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | | Langfuse project keys; tracing is off without them |
+| `LANGFUSE_BASE_URL` | `https://cloud.langfuse.com` | Langfuse region (US: `https://us.cloud.langfuse.com`) or self-hosted server |
+| `LANGFUSE_TRACING_ENVIRONMENT` | `development` (in `.env.example`) | Environment name the traces are filed under |
 
 ## API
 
@@ -206,7 +238,7 @@ The tests run offline: scripted chat models, a deterministic fake embedder and a
 ```
 prompts/system.md         system prompt
 scripts/                  analyze_dataset, preprocess_dataset, build_index, chat, serve, start (Docker entrypoint)
-src/tiredai/              preprocessing, documents, embeddings, vectorstore, search, agent, api, conversations, config, startup
+src/tiredai/              preprocessing, documents, embeddings, vectorstore, search, agent, api, conversations, config, startup, tracing
 src/tiredai/static/       chat UI (index.html, app.js, lib.mjs, style.css)
 tests/                    pytest suite; tests/ui/ holds the JavaScript tests
 data/                     raw CSV, processed Parquet, vector store and conversation history (not in git)

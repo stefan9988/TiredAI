@@ -11,17 +11,18 @@ import argparse
 import sys
 import uuid
 
-from tiredai.agent import build_agent, stream_reply
+from tiredai import tracing
+from tiredai.agent import build_agent, stream_reply, trace_metadata
 from tiredai.config import Settings
 from tiredai.embeddings import build_encoder
 from tiredai.search import catalog_tools
 from tiredai.vectorstore import connect
 
 
-def ask(agent, message: str, thread_id: str) -> None:
+def ask(agent, message: str, thread_id: str, metadata: dict) -> None:
     print("assistant> ", end="", flush=True)
     try:
-        for text in stream_reply(agent, message, thread_id):
+        for text in stream_reply(agent, message, thread_id, source="cli", metadata=metadata):
             print(text, end="", flush=True)
     except Exception as exc:  # show provider errors (rate limits, auth) without a traceback
         print(f"\n[error] {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -52,12 +53,20 @@ def main() -> None:
     except (ValueError, FileNotFoundError) as exc:
         sys.exit(str(exc))
 
+    tracing.start()
+    try:
+        converse(agent, args.message, trace_metadata(settings), settings.llm.model)
+    finally:
+        tracing.flush()
+
+
+def converse(agent, message: str | None, metadata: dict, model: str) -> None:
     thread_id = str(uuid.uuid4())
-    if args.message:
-        ask(agent, args.message, thread_id)
+    if message:
+        ask(agent, message, thread_id, metadata)
         return
 
-    print(f"TiredAI ({settings.llm.model}). /new starts a new conversation, Ctrl+D quits.")
+    print(f"TiredAI ({model}). /new starts a new conversation, Ctrl+D quits.")
     while True:
         try:
             message = input("\nyou> ").strip()
@@ -70,7 +79,7 @@ def main() -> None:
             thread_id = str(uuid.uuid4())
             print("Started a new conversation.")
         elif message:
-            ask(agent, message, thread_id)
+            ask(agent, message, thread_id, metadata)
 
 
 if __name__ == "__main__":

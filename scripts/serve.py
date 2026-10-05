@@ -8,8 +8,10 @@ Usage:
 """
 
 import argparse
+import copy
 
 import uvicorn
+from uvicorn.config import LOGGING_CONFIG
 
 from tiredai.config import Settings
 
@@ -19,6 +21,9 @@ def main() -> None:
     parser.add_argument("--reload", action="store_true", help="restart when source files change")
     args = parser.parse_args()
     settings = Settings.load()
+    # The app's own messages (tracing status, chat list backfill) next to uvicorn's, also with --reload.
+    log_config = copy.deepcopy(LOGGING_CONFIG)
+    log_config["loggers"]["tiredai"] = {"handlers": ["default"], "level": "INFO", "propagate": False}
 
     uvicorn.run(
         "tiredai.api:create_app",
@@ -26,6 +31,7 @@ def main() -> None:
         host=settings.api_host,
         port=settings.api_port,
         reload=args.reload,
+        log_config=log_config,
     )
 
 

@@ -14,6 +14,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import BaseModel, ConfigDict, Field
 from qdrant_client import QdrantClient, models
 
+from tiredai import tracing
 from tiredai.embeddings import EmbeddingError
 from tiredai.vectorstore import DENSE, DOCUMENT_KEY, SPARSE
 
@@ -207,15 +208,41 @@ class CatalogSearch:
             return {"error": " ".join(errors)}
 
         query_filter = models.Filter(must=must) if must else None
+        query = query.strip() if query and query.strip() else None
+        with tracing.client().start_as_current_observation(
+            as_type="retriever",
+            name="retrieve-products",
+            input={"query": query, "filters": filters, "sort": sort},
+            metadata={"collection": self.collection, "max_results": self.max_results},
+        ) as retrieval:
+            try:
+                total, points, order = self._retrieve(query, query_filter, sort)
+            except EmbeddingError as exc:
+                retrieval.update(level="ERROR", status_message=str(exc))
+                return {"error": f"Search is temporarily unavailable: {exc}"}
+            # The ranking as retrieved; the tool's output holds every field the model got.
+            ranked = [{"sku": p.payload["sku"], "name": p.payload["name"], "score": getattr(p, "score", None)} for p in points]
+            retrieval.update(output={"total_matching": total, "order": order, "products": ranked})
+
+        result = {
+            "total_matching": total,
+            "returned": len(points),
+            "order": order,
+            "filters": filters,
+            "products": [product_view(p.payload) for p in points],
+        }
+        if total == 0:
+            result["note"] = "No products in the catalog match these filters."
+        return result
+
+    def _retrieve(self, query: str | None, query_filter: models.Filter | None, sort: Sort) -> tuple[int, list, str]:
+        """(products matching the filter, the points to return, their order)."""
         limit = self.max_results
         candidates = max(CANDIDATES, limit)
         total = self.client.count(self.collection, count_filter=query_filter, exact=True).count
 
-        if query and query.strip():
-            try:
-                dense, sparse = self.encoder.encode_query(query.strip())
-            except EmbeddingError as exc:
-                return {"error": f"Search is temporarily unavailable: {exc}"}
+        if query:
+            dense, sparse = self.encoder.encode_query(query)
             points = self.client.query_points(
                 self.collection,
                 prefetch=[
@@ -243,17 +270,7 @@ class CatalogSearch:
                 limit=limit,
                 with_payload=True,
             )
-
-        result = {
-            "total_matching": total,
-            "returned": len(points),
-            "order": order,
-            "filters": filters,
-            "products": [product_view(p.payload) for p in points],
-        }
-        if total == 0:
-            result["note"] = "No products in the catalog match these filters."
-        return result
+        return total, points, order
 
 
 class SearchArgs(BaseModel):
