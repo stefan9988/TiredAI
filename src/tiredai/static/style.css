@@ -650,6 +650,31 @@ body {
   text-underline-offset: 3px;
 }
 
+/* Column headers are buttons that sort the table. */
+.bench-table th.sortable button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  text-decoration: inherit;
+  cursor: pointer;
+}
+
+.bench-table th.sortable button:hover,
+.bench-table th[aria-sort="ascending"] button,
+.bench-table th[aria-sort="descending"] button {
+  color: var(--accent);
+}
+
+.bench-table th .arrow {
+  display: inline-block;
+  min-width: 1em;
+  margin-left: 2px;
+  font-size: 10px;
+}
+
 .bench-table .num {
   font-variant-numeric: tabular-nums;
   text-align: right;

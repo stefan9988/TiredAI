@@ -6,6 +6,7 @@ import {
   errorMessage,
   escapeHtml,
   isBenchmarksUrl,
+  nextSort,
   parseSSE,
   renderBenchmarks,
   renderMarkdown,
@@ -41,6 +42,9 @@ let detailsFor = null;
 let showingBenchmarks = false;
 // Counts requests for the results, so only the latest one is shown.
 let benchmarksRequest = 0;
+// The results shown, and how each table is sorted ({agent: {key, direction}, ...}), kept while the page is open.
+let benchmarks = null;
+const benchmarkSort = {};
 
 const SEARCH_ICON =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/>' +
@@ -250,7 +254,10 @@ async function openBenchmarks() {
       throw new Error(errorMessage(await response.json().catch(() => null), response.status));
     }
     const data = await response.json();
-    if (current()) benchmarksView.innerHTML = renderBenchmarks(data);
+    if (current()) {
+      benchmarks = data;
+      benchmarksView.innerHTML = renderBenchmarks(benchmarks, benchmarkSort);
+    }
   } catch (err) {
     if (current()) {
       const reason = escapeHtml(err.message || "something went wrong.");
@@ -406,6 +413,16 @@ benchmarksLink.addEventListener("click", (e) => {
   if (busy) return;
   if (!showingBenchmarks) history.pushState(null, "", BENCHMARKS_URL);
   openBenchmarks();
+});
+
+// A column header sorts its table; the header keeps the focus, so the keyboard can sort again.
+benchmarksView.addEventListener("click", (e) => {
+  const button = e.target.closest("button[data-sort-key]");
+  if (!button || !benchmarks) return;
+  const { sortKind: kind, sortKey: key, sortFirst: first } = button.dataset;
+  benchmarkSort[kind] = nextSort(benchmarkSort[kind], key, first);
+  benchmarksView.innerHTML = renderBenchmarks(benchmarks, benchmarkSort);
+  benchmarksView.querySelector(`button[data-sort-kind="${kind}"][data-sort-key="${CSS.escape(key)}"]`)?.focus();
 });
 
 // The page URL says what to show: the benchmarks, a saved chat, or a new chat.

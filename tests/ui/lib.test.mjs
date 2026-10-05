@@ -11,11 +11,13 @@ import {
   errorMessage,
   formatValue,
   isBenchmarksUrl,
+  nextSort,
   parseSSE,
   productColumns,
   renderBenchmarks,
   renderMarkdown,
   renderToolCalls,
+  sortRows,
 } from "../../src/tiredai/static/lib.mjs";
 
 test("model output is escaped, so it cannot inject markup", () => {
@@ -325,4 +327,42 @@ test("retrieval rows show their ranking", () => {
 
   assert.ok(html.includes("<td>BM25</td>") && html.includes("188 queries"));
   assert.ok(html.includes('<td class="num">98.5%</td>') && html.includes("<td>–</td>")); // one row: nothing to beat
+});
+
+test("rows sort by a score, a detail, the model or the ranking; missing values go last", () => {
+  const rows = [
+    { model: "b", ranking: "sparse", scores: { passed: 0.5 }, details: { seconds_per_turn: 9 } },
+    { model: "A", ranking: "hybrid", scores: { passed: null }, details: { seconds_per_turn: 4 } },
+    { model: "c", ranking: "dense", scores: { passed: 0.9 }, details: {} },
+  ];
+  const order = (sort) => sortRows(rows, sort).map((r) => r.model);
+
+  assert.deepEqual(order({ key: "passed", direction: "desc" }), ["c", "b", "A"]);
+  assert.deepEqual(order({ key: "passed", direction: "asc" }), ["b", "c", "A"]);
+  assert.deepEqual(order({ key: "seconds_per_turn", direction: "asc" }), ["A", "b", "c"]);
+  assert.deepEqual(order({ key: "model", direction: "asc" }), ["A", "b", "c"]);
+  assert.deepEqual(order({ key: "ranking", direction: "asc" }), ["A", "c", "b"]); // hybrid, dense, BM25
+  assert.equal(sortRows(rows, undefined), rows); // no sort: the API's order
+});
+
+test("a first click sorts the useful way round, a second click turns it around", () => {
+  const scores = nextSort(undefined, "passed", "desc");
+  assert.deepEqual(scores, { key: "passed", direction: "desc" });
+  assert.deepEqual(nextSort(scores, "passed", "desc"), { key: "passed", direction: "asc" });
+  assert.deepEqual(nextSort(scores, "seconds_per_turn", "asc"), { key: "seconds_per_turn", direction: "asc" });
+});
+
+test("sortable headers say how their table is sorted", () => {
+  const data = {
+    agent: { ...METRICS.agent, rows: [agentRow("ling", 0.9), agentRow("qwen", 0.5)] },
+    retrieval: { ...METRICS.retrieval, rows: [] },
+  };
+  const html = renderBenchmarks(data, { agent: { key: "passed", direction: "asc" } });
+
+  assert.ok(html.indexOf("<strong>qwen</strong>") < html.indexOf("<strong>ling</strong>"));
+  assert.ok(html.includes('<th class="sortable num" aria-sort="ascending" title="Every check passed">'));
+  assert.ok(html.includes('data-sort-kind="agent" data-sort-key="passed" data-sort-first="desc">Passed<span class="arrow" aria-hidden="true">▲</span>'));
+  assert.ok(html.includes('data-sort-key="seconds_per_turn" data-sort-first="asc"'));
+  assert.ok(html.includes('aria-sort="none"><button type="button" data-sort-kind="agent" data-sort-key="model" data-sort-first="asc">Chat model'));
+  assert.ok(html.includes("<th>Langfuse</th>")); // links don't sort
 });

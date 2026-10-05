@@ -261,20 +261,64 @@ export function bestScores(rows, names) {
 }
 
 const RANKING_LABELS = { hybrid: "Hybrid (app)", dense: "Dense", sparse: "BM25" };
+const RANKING_ORDER = ["hybrid", "dense", "sparse"];
 
-function benchmarkTable(kind, results) {
+// A row's value in a column: the model name, the ranking's place (the app's first), or a score or detail.
+function sortValue(row, key) {
+  if (key === "model") return row.model.toLowerCase();
+  if (key === "ranking") {
+    const place = RANKING_ORDER.indexOf(row.ranking);
+    return place < 0 ? RANKING_ORDER.length : place;
+  }
+  return row.scores[key] ?? row.details[key] ?? null;
+}
+
+// The rows ordered by a column, sort = {key, direction: "asc" | "desc"}. Rows without a value go last
+// either way, and equal values keep their order. Without a sort, the order the API sent.
+export function sortRows(rows, sort) {
+  if (!sort) return rows;
+  const sign = sort.direction === "asc" ? 1 : -1;
+  const missing = (v) => v === null || v === undefined;
+  return [...rows].sort((a, b) => {
+    const x = sortValue(a, sort.key);
+    const y = sortValue(b, sort.key);
+    if (missing(x) || missing(y)) return missing(x) - missing(y);
+    return x < y ? -sign : x > y ? sign : 0;
+  });
+}
+
+// Clicking a column sorts it `first` ("desc" for scores, "asc" for times, tokens and names); clicking
+// the sorted column again turns it around.
+export function nextSort(current, key, first) {
+  if (current?.key === key) return { key, direction: current.direction === "asc" ? "desc" : "asc" };
+  return { key, direction: first };
+}
+
+function sortHeader(kind, key, label, { first, sort, numeric = false, description = "" }) {
+  const active = sort?.key === key;
+  const direction = active ? (sort.direction === "asc" ? "ascending" : "descending") : "none";
+  const arrow = active ? (sort.direction === "asc" ? "▲" : "▼") : "";
+  const title = description ? ` title="${escapeHtml(description)}"` : "";
+  return (
+    `<th class="sortable${numeric ? " num" : ""}" aria-sort="${direction}"${title}>` +
+    `<button type="button" data-sort-kind="${kind}" data-sort-key="${escapeHtml(key)}" data-sort-first="${first}">` +
+    `${escapeHtml(label)}<span class="arrow" aria-hidden="true">${arrow}</span></button></th>`
+  );
+}
+
+function benchmarkTable(kind, results, sort) {
   const names = results.scores.map((s) => s.name);
   const best = bestScores(results.rows, names);
-  const header = (metric) => `<th class="num" title="${escapeHtml(metric.description)}">${escapeHtml(metric.label)}</th>`;
+  const metric = (first) => (m) => sortHeader(kind, m.name, m.label, { first, sort, numeric: true, description: m.description });
   const head = [
-    `<th>${kind === "agent" ? "Chat model" : "Embedding model"}</th>`,
-    kind === "retrieval" ? "<th>Ranking</th>" : "",
-    ...results.scores.map(header),
-    ...results.details.map(header),
+    sortHeader(kind, "model", kind === "agent" ? "Chat model" : "Embedding model", { first: "asc", sort }),
+    kind === "retrieval" ? sortHeader(kind, "ranking", "Ranking", { first: "asc", sort }) : "",
+    ...results.scores.map(metric("desc")), // higher is better
+    ...results.details.map(metric("asc")), // time and tokens: lower is better
     "<th>Langfuse</th>",
   ].join("");
 
-  const rows = results.rows.map((row) => {
+  const rows = sortRows(results.rows, sort).map((row) => {
     const notes = [`${row.items} ${kind === "agent" ? "conversations" : "queries"}`, when(row.finished_at)];
     if (row.runs > 1) notes.push(`mean of ${row.runs} runs`);
     const lines = [notes.join(" · ")];
@@ -320,14 +364,15 @@ const BENCHMARK_SECTIONS = {
 };
 
 // The benchmarks view: a table per benchmark with the latest result of each model, the best value
-// of each score in bold. Column headers explain their score on hover. All text is escaped.
-export function renderBenchmarks(data) {
+// of each score in bold. Column headers explain their score on hover and sort the table when
+// clicked; `sort` holds each table's sort ({agent: {key, direction}, ...}). All text is escaped.
+export function renderBenchmarks(data, sort = {}) {
   const sections = Object.entries(BENCHMARK_SECTIONS).map(([kind, section]) => {
     const results = data[kind];
     const body = results.rows.length
-      ? benchmarkTable(kind, results)
+      ? benchmarkTable(kind, results, sort[kind])
       : `<p class="none">No results yet. Run <code>${escapeHtml(section.command)}</code>.</p>`;
     return `<section class="bench"><h2>${escapeHtml(section.title)}</h2><p class="about">${escapeHtml(section.about)}</p>${body}</section>`;
   });
-  return `<h1>Benchmarks</h1>${sections.join("")}<p class="about">Scores are averages over the cases; hover a column name for what it measures.</p>`;
+  return `<h1>Benchmarks</h1>${sections.join("")}<p class="about">Scores are averages over the cases. Hover a column name for what it measures; click it to sort.</p>`;
 }
