@@ -1,0 +1,96 @@
+# Hand-written shopper needs for the retrieval benchmark. `relevant` maps catalog fields to the values
+# that count: a product matching all of them is fully relevant (precision@10), and each field it
+# matches adds to its gain (ndcg@10). Each query needs at least 10 fully relevant products.
+
+- id: quiet-touring-sedan
+  query: quiet touring tire for a sedan
+  relevant: {performance: [Touring], carType: [Passenger]}
+- id: mud-tires-jeep
+  query: mud tires for my jeep
+  relevant: {performance: [Mud Terrain], carType: [Truck/SUV, Light Truck]}
+- id: winter-suv
+  query: winter tires for an SUV
+  relevant: {season: [Winter], carType: [Truck/SUV]}
+- id: snow-tires
+  query: snow tires
+  relevant: {season: [Winter]}
+- id: winter-car
+  query: winter tires for my car
+  relevant: {season: [Winter], carType: [Passenger]}
+- id: summer-tires
+  query: summer tires
+  relevant: {season: [Summer]}
+- id: summer-high-performance
+  query: high performance summer tires
+  relevant: {season: [Summer], performance: [High Performance]}
+- id: sports-car
+  query: performance tires for a sports car
+  relevant: {performance: [High Performance, Performance], carType: [Passenger]}
+- id: all-weather-passenger
+  query: all weather tire for a passenger car
+  relevant: {season: [All Weather], carType: [Passenger]}
+- id: all-terrain-pickup
+  query: all terrain tires for my pickup
+  relevant: {performance: [All Terrain], carType: [Truck/SUV, Light Truck]}
+- id: highway-light-truck
+  query: highway tires for a light truck
+  relevant: {performance: [Highway], carType: [Light Truck]}
+- id: extreme-terrain
+  query: extreme terrain off-road tires
+  relevant: {performance: [Extreme Terrain]}
+- id: rugged-terrain
+  query: rugged terrain tires
+  relevant: {performance: [Rugged Terrain]}
+- id: run-flat
+  query: run flat tires
+  relevant: {runFlat: [true]}
+- id: run-flat-passenger
+  query: run-flat tires for a passenger car
+  relevant: {runFlat: [true], carType: [Passenger]}
+- id: lawn-mower
+  query: lawn mower tires
+  relevant: {carType: [Lawn Mower & Garden Tractor]}
+- id: farm-tractor
+  query: tractor tires for the farm
+  relevant: {carType: [Tractor]}
+- id: atv-trail
+  query: ATV tires for trail riding
+  relevant: {carType: [ATV & UTV]}
+- id: utv-off-road
+  query: off road tires for a UTV
+  relevant: {carType: [ATV & UTV]}
+- id: golf-cart
+  query: golf cart tires
+  relevant: {carType: [Golf Cart]}
+- id: motorcycle
+  query: motorcycle tire
+  relevant: {carType: [Motorcycle]}
+- id: trailer
+  query: trailer tires
+  relevant: {carType: [Trailer]}
+- id: racing-track
+  query: racing tires for the track
+  relevant: {carType: [Racing]}
+- id: forklift
+  query: forklift tires
+  relevant: {carType: [Industrial]}
+- id: commercial-truck
+  query: commercial truck tires
+  relevant: {carType: [Commercial]}
+- id: raised-white-letters
+  query: raised white letter tires
+  relevant: {sidewall: ["RWL: Raised White Letters", "ORWL: Outlined Raised White Letters"]}
+- id: whitewall-classic
+  query: whitewall tires for a classic car
+  relevant:
+    sidewall: ["WWW: Wide White Wall", "WSW: White Side Wall", "NWS: Narrow White Side Wall", "DWW: Double White Wall",
+               "MWW: Medium White Wall"]
+- id: non-marking
+  query: non-marking tires
+  relevant: {sidewall: ["NONM: Non-Marking"]}
+- id: michelin-all-season
+  query: michelin all season tires
+  relevant: {brand: [Michelin], season: [All Season]}
+- id: bridgestone-truck
+  query: bridgestone truck tires
+  relevant: {brand: [Bridgestone], carType: [Truck/SUV, Light Truck]}

@@ -32,6 +32,8 @@ class DenseEmbedder(Protocol):
 
     def embed_query(self, text: str) -> list[float]: ...
 
+    def embed_queries(self, texts: list[str]) -> list[list[float]]: ...
+
 
 class FastEmbedDense:
     """Local ONNX model, runs on CPU."""
@@ -45,6 +47,9 @@ class FastEmbedDense:
 
     def embed_query(self, text: str) -> list[float]:
         return next(iter(self._model.query_embed(text))).tolist()
+
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        return [vector.tolist() for vector in self._model.query_embed(texts)]
 
 
 class EmbeddingCache:
@@ -132,6 +137,10 @@ class OpenRouterDense:
 
     def embed_query(self, text: str) -> list[float]:
         return self._embed([self.query_prefix + text])[0]
+
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        """Many queries in as few requests as possible; later embed_query calls for them hit the cache."""
+        return self._embed([self.query_prefix + t for t in texts])
 
     def _embed(self, inputs: list[str]) -> list[list[float]]:
         keys = [EmbeddingCache.key(self.model, text) for text in inputs]

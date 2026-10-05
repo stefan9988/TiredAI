@@ -7,7 +7,6 @@ from conftest import FailingModel, FakeEncoder, ToolCallingModel, raw_frame
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 from langfuse import LangfuseOtelSpanAttributes as Attr
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from qdrant_client import QdrantClient
 
 from tiredai import tracing
@@ -19,52 +18,6 @@ from tiredai.embeddings import EmbeddingError, Encoder
 from tiredai.preprocessing import normalize
 from tiredai.search import CatalogSearch, make_search_tool
 from tiredai.vectorstore import index_products
-
-KEY = "pk-lf-test"
-
-
-@pytest.fixture(scope="session")
-def langfuse_in_memory():
-    # One client for the session: Langfuse keeps one client per public key. It exports to memory,
-    # and its server address is never contacted.
-    exporter = InMemorySpanExporter()
-    client = tracing.new_client(public_key=KEY, secret_key="sk-lf-test", base_url="http://127.0.0.1:9", span_exporter=exporter)
-    return client, exporter
-
-
-class Traces:
-    def __init__(self, client, exporter):
-        self.client = client
-        self.exporter = exporter
-
-    def spans(self):
-        self.client.flush()
-        return sorted(self.exporter.get_finished_spans(), key=lambda s: s.start_time)
-
-    def named(self, name):
-        return [s for s in self.spans() if s.name == name]
-
-    def tree(self):
-        """(name, type) of each observation, nested as [(name, type), [children...]]."""
-        spans = self.spans()
-        children = {}
-        for span in spans:
-            children.setdefault(span.parent.span_id if span.parent else None, []).append(span)
-
-        def node(span):
-            return [(span.name, span.attributes.get(Attr.OBSERVATION_TYPE)), [node(c) for c in children.get(span.context.span_id, [])]]
-
-        return [node(root) for root in children.get(None, [])]
-
-
-@pytest.fixture
-def traces(langfuse_in_memory):
-    client, exporter = langfuse_in_memory
-    exporter.clear()
-    tracing.use_client(client, KEY)
-    yield Traces(client, exporter)
-    tracing.use_client(None)
-
 
 class NamedModel(ToolCallingModel):
     """A scripted model that reports a model name, like ChatOpenRouter does."""

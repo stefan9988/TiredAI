@@ -109,6 +109,16 @@ def test_cached_vectors_are_not_requested_again(api, cache, tmp_path):
     assert second[:2] == [first[1], first[0]]
 
 
+def test_many_queries_are_embedded_in_one_request_and_cached(api, cache):
+    dense = embedder(api, cache)
+
+    batch = dense.embed_queries(["summer tires", "winter tires"])
+    single = dense.embed_query("winter tires")
+
+    assert api.requests == [{"model": MODEL, "input": ["query: summer tires", "query: winter tires"]}]
+    assert single == batch[1]
+
+
 def test_duplicate_texts_are_requested_once(api, cache):
     vectors = embedder(api, cache).embed_documents(["same", "same"])
 

@@ -242,6 +242,22 @@ def test_searches_return_up_to_max_results_products(catalog):
     assert all(r["total_matching"] == len(CATALOG) for r in (by_price, by_relevance, query_by_price))
 
 
+def test_ranking_can_use_dense_or_bm25_vectors_alone(catalog):
+    class SplitEncoder(FakeEncoder):
+        """The dense vector points at the Michelin, the BM25 vector at the Bridgestone."""
+
+        def encode_query(self, text):
+            return self.dense("michelin pilot sport 4s"), self.sparse("bridgestone turanza rft")
+
+    def top(ranking: str) -> list[str]:
+        search = CatalogSearch(catalog.client, "tires", SplitEncoder(), max_results=20, ranking=ranking)
+        return skus(search.search(query="any words", size="205/55R16"))[:2]
+
+    assert top("dense")[0] == "PILOT"
+    assert top("sparse")[0] == "RUNFLAT"
+    assert set(top("hybrid")) == {"PILOT", "RUNFLAT"}
+
+
 def test_embedding_failure_is_returned_as_an_error(catalog):
     class DownEncoder:
         def encode_query(self, text):

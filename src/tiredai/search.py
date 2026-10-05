@@ -38,6 +38,7 @@ AS_TEXT = {
 }
 
 Sort = Literal["relevance", "price_asc", "price_desc", "recommendations_desc"]
+Ranking = Literal["hybrid", "dense", "sparse"]
 # Payload field and descending flag of each sort besides relevance.
 SORT_KEYS = {"price_asc": ("price", False), "price_desc": ("price", True), "recommendations_desc": ("recommendations", True)}
 
@@ -96,13 +97,20 @@ def speed_rank(rating: str) -> int | None:
 
 
 class CatalogSearch:
-    """Every search returns up to `max_results` products (AGENT_MAX_SEARCH_RESULTS)."""
+    """Every search returns up to `max_results` products (AGENT_MAX_SEARCH_RESULTS).
 
-    def __init__(self, client: QdrantClient, collection: str, encoder: QueryEncoder, *, max_results: int):
+    `ranking` is how a query ranks products: dense and BM25 fused (what the app uses), or one of
+    them alone, which the retrieval benchmark compares.
+    """
+
+    def __init__(
+        self, client: QdrantClient, collection: str, encoder: QueryEncoder, *, max_results: int, ranking: Ranking = "hybrid"
+    ):
         self.client = client
         self.collection = collection
         self.encoder = encoder
         self.max_results = max_results
+        self.ranking = ranking
 
         values: dict[str, set[str]] = {key: set() for key in ("size", "brand", "season", "carType", "performance", "speedRating")}
         offset = None
@@ -213,7 +221,7 @@ class CatalogSearch:
             as_type="retriever",
             name="retrieve-products",
             input={"query": query, "filters": filters, "sort": sort},
-            metadata={"collection": self.collection, "max_results": self.max_results},
+            metadata={"collection": self.collection, "max_results": self.max_results, "ranking": self.ranking},
         ) as retrieval:
             try:
                 total, points, order = self._retrieve(query, query_filter, sort)
@@ -235,6 +243,20 @@ class CatalogSearch:
             result["note"] = "No products in the catalog match these filters."
         return result
 
+    def _ranking_query(self, dense: list[float], sparse: models.SparseVector, candidates: int) -> dict:
+        """The query_points arguments that rank by self.ranking."""
+        if self.ranking == "dense":
+            return {"query": dense, "using": DENSE}
+        if self.ranking == "sparse":
+            return {"query": sparse, "using": SPARSE}
+        return {
+            "prefetch": [
+                models.Prefetch(query=dense, using=DENSE, limit=candidates),
+                models.Prefetch(query=sparse, using=SPARSE, limit=candidates),
+            ],
+            "query": models.FusionQuery(fusion=models.Fusion.RRF),
+        }
+
     def _retrieve(self, query: str | None, query_filter: models.Filter | None, sort: Sort) -> tuple[int, list, str]:
         """(products matching the filter, the points to return, their order)."""
         limit = self.max_results
@@ -245,11 +267,7 @@ class CatalogSearch:
             dense, sparse = self.encoder.encode_query(query)
             points = self.client.query_points(
                 self.collection,
-                prefetch=[
-                    models.Prefetch(query=dense, using=DENSE, limit=candidates),
-                    models.Prefetch(query=sparse, using=SPARSE, limit=candidates),
-                ],
-                query=models.FusionQuery(fusion=models.Fusion.RRF),
+                **self._ranking_query(dense, sparse, candidates),
                 query_filter=query_filter,
                 limit=limit if sort == "relevance" else candidates,
                 with_payload=True,
