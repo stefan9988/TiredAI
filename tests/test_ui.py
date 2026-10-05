@@ -34,6 +34,7 @@ def test_chat_page_is_served_at_the_root(client):
     assert "<title>TiredAI</title>" in response.text
     assert '<script type="module" src="/static/app.js">' in response.text
     assert 'id="new-chat"' in response.text and 'id="chats"' in response.text
+    assert '<h2 id="chats-heading" class="chats-heading">Chats</h2>' in response.text  # names the chat list
     assert 'id="details"' in response.text and 'id="details-body"' in response.text  # the searches side panel
     assert 'id="benchmarks" class="benchmarks-link" href="/?view=benchmarks"' in response.text
     assert 'id="benchmarks-view"' in response.text and "Benchmark results" in response.text
