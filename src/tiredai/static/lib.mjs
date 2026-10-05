@@ -429,7 +429,7 @@ const BENCHMARK_SECTIONS = {
     model: "Guard model",
     items: "messages",
     about: "Shopper messages the assistant should handle or stop (off-topic requests, prompt injections, harmful " +
-      "asks), judged with none, some or all of the conversation before them. The guardrail isn't part of the agent yet.",
+      "asks), judged with none, some or all of the conversation before them.",
     command: "uv run python scripts/benchmark_guardrail.py --model MODEL",
   },
 };
