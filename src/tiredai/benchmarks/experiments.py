@@ -147,11 +147,12 @@ class RunSummary:
     failed: int  # cases whose task raised: they have no output and no scores
     scores: dict[str, float]  # mean of each score over the cases that have it
     details: dict[str, Any] = field(default_factory=dict)  # other figures, e.g. latency and tokens
+    setup: dict[str, Any] = field(default_factory=dict)  # what was benchmarked: llm_model, embedding_model, ranking, repeat
     url: str | None = None
     results: list[dict] = field(default_factory=list)  # every case with its output and scores
 
 
-def summarize(label: str, result, items: int, details: dict | None = None) -> RunSummary:
+def summarize(label: str, result, items: int, details: dict | None = None, setup: dict | None = None) -> RunSummary:
     """The scores of a langfuse ExperimentResult averaged per name."""
     values: dict[str, list[float]] = defaultdict(list)
     results = []
@@ -171,6 +172,7 @@ def summarize(label: str, result, items: int, details: dict | None = None) -> Ru
         failed=items - len(result.item_results),
         scores={name: mean(v) for name, v in values.items()},
         details=details or {},
+        setup=setup or {},
         url=result.dataset_run_url,
         results=results,
     )

@@ -4,6 +4,7 @@
     POST /chat/stream                   the same reply streamed as Server-Sent Events
     GET  /conversations                 every chat, most recently active first
     GET  /conversations/{id}/messages   a chat's messages, to reopen it
+    GET  /benchmarks                    the latest benchmark results per model (benchmarks/results/)
     GET  /health                        service, model and vector store status
     GET  /              chat page (static files in src/tiredai/static)
 
@@ -28,6 +29,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from tiredai import tracing
 from tiredai.agent import aget_transcript, astream_reply, astream_turn, build_agent, trace_metadata
+from tiredai.benchmarks import reports
+from tiredai.benchmarks.experiments import RESULTS_DIR
 from tiredai.config import Settings
 from tiredai.conversations import Conversation, ConversationStore
 from tiredai.embeddings import build_encoder
@@ -87,6 +90,36 @@ class VectorStoreHealth(BaseModel):
     detail: str | None = None
 
 
+class BenchmarkMetric(BaseModel):
+    name: str
+    label: str
+    description: str
+
+
+class BenchmarkRow(BaseModel):
+    model: str = Field(description="The chat model (agent) or embedding model (retrieval; BM25 for sparse ranking).")
+    embedding_model: str | None = Field(description="Agent: the embedding model of the index it searched.")
+    ranking: str | None = Field(description="Retrieval: hybrid, dense or sparse.")
+    finished_at: str
+    runs: int = Field(description="Runs averaged into this row (--repeat).")
+    items: int
+    failed: int = Field(description="Cases whose run failed, so they have no scores.")
+    scores: dict[str, float | None]
+    details: dict[str, float | None]
+    urls: list[str] = Field(description="The runs in Langfuse.")
+
+
+class BenchmarkResults(BaseModel):
+    scores: list[BenchmarkMetric]
+    details: list[BenchmarkMetric]
+    rows: list[BenchmarkRow]
+
+
+class BenchmarksResponse(BaseModel):
+    agent: BenchmarkResults
+    retrieval: BenchmarkResults
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     model: str
@@ -94,9 +127,14 @@ class HealthResponse(BaseModel):
 
 
 def create_app(
-    settings: Settings | None = None, *, model: BaseChatModel | None = None, encoder: QueryEncoder | None = None
+    settings: Settings | None = None,
+    *,
+    model: BaseChatModel | None = None,
+    encoder: QueryEncoder | None = None,
+    benchmark_results: Path = RESULTS_DIR,
 ) -> FastAPI:
-    """Build the app; `model` and `encoder` replace the configured models (used by tests)."""
+    """Build the app; `model` and `encoder` replace the configured models, `benchmark_results` the
+    reports folder (used by tests)."""
     settings = settings or Settings.load()
     metadata = trace_metadata(settings)
 
@@ -200,6 +238,19 @@ def create_app(
         if await request.app.state.conversations.get(conversation_id) is None:
             raise HTTPException(404, f"Unknown conversation {conversation_id!r}")
         return [ChatMessage(**m) for m in await aget_transcript(request.app.state.agent, conversation_id)]
+
+    @app.get("/benchmarks")
+    async def benchmarks() -> BenchmarksResponse:
+        """The latest result of each benchmarked model, from the reports in benchmarks/results/."""
+        rows = await asyncio.to_thread(reports.latest_results, benchmark_results)
+
+        def results(kind: str) -> BenchmarkResults:
+            def metrics(info):
+                return [BenchmarkMetric(name=n, label=label, description=d) for n, label, d in info[kind]]
+
+            return BenchmarkResults(scores=metrics(reports.SCORES), details=metrics(reports.DETAILS), rows=rows[kind])
+
+        return BenchmarksResponse(agent=results("agent"), retrieval=results("retrieval"))
 
     @app.get("/health")
     async def health(request: Request) -> HealthResponse:

@@ -107,7 +107,8 @@ def main() -> None:
                 metadata={"embedding_model": label, "ranking": ranking, "git": revision},
             )
             seconds = (time.perf_counter() - started) / max(len(data), 1)
-            summaries.append(ex.summarize(run_label, result, len(data), {"seconds_per_query": seconds}))
+            setup = {"ranking": ranking} if ranking == "sparse" else {"embedding_model": label, "ranking": ranking}
+            summaries.append(ex.summarize(run_label, result, len(data), {"seconds_per_query": seconds}, setup))
         client.close()
     tracing.flush()
 

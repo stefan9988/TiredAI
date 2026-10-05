@@ -3,13 +3,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  BENCHMARKS_URL,
+  bestScores,
   chatIdFromUrl,
   chatUrl,
   createStatusQueue,
   errorMessage,
   formatValue,
+  isBenchmarksUrl,
   parseSSE,
   productColumns,
+  renderBenchmarks,
   renderMarkdown,
   renderToolCalls,
 } from "../../src/tiredai/static/lib.mjs";
@@ -259,4 +263,66 @@ test("other tools' output is shown as text", () => {
   const html = renderToolCalls([{ id: "c", name: "lookup", args: { q: 1 }, error: null, result: { ok: true } }]);
 
   assert.ok(html.includes("<h3>lookup</h3>") && html.includes('<h4>The model got</h4><pre>{\n  &quot;ok&quot;: true\n}</pre>'));
+});
+
+test("the benchmarks view has its own URL", () => {
+  assert.equal(BENCHMARKS_URL, "/?view=benchmarks");
+  assert.ok(isBenchmarksUrl("?view=benchmarks"));
+  assert.ok(!isBenchmarksUrl("?c=abc") && !isBenchmarksUrl(""));
+  assert.equal(chatIdFromUrl("?view=benchmarks"), null);
+});
+
+const METRICS = {
+  agent: {
+    scores: [
+      { name: "passed", label: "Passed", description: "Every check passed" },
+      { name: "groundedness", label: "Grounded", description: "Facts match <the data>" },
+    ],
+    details: [
+      { name: "seconds_per_turn", label: "s / turn", description: "Mean time" },
+      { name: "input_tokens", label: "Tokens in", description: "Prompt tokens" },
+    ],
+  },
+  retrieval: {
+    scores: [{ name: "reciprocal_rank", label: "MRR", description: "Mean reciprocal rank" }],
+    details: [],
+  },
+};
+
+function agentRow(model, passed, extra = {}) {
+  return {
+    model, embedding_model: "openrouter:qwen", ranking: null, finished_at: "2026-10-05T10:00:01Z", runs: 1, items: 27,
+    failed: 0, scores: { passed, groundedness: 1 }, details: { seconds_per_turn: 4.577, input_tokens: 20565 },
+    urls: ["https://langfuse.example/run?a=1&b=2"], ...extra,
+  };
+}
+
+test("best scores per column: ties with the best win, a score every row shares marks nothing", () => {
+  const rows = [agentRow("a", 0.5), agentRow("b", 0.9), agentRow("c", 0.9)];
+  assert.deepEqual(bestScores(rows, ["passed", "groundedness", "missing"]), { passed: 0.9 });
+});
+
+test("benchmark tables: a row per model, best scores marked, everything escaped", () => {
+  const html = renderBenchmarks({
+    agent: { ...METRICS.agent, rows: [agentRow("<b>ling</b>", 0.9), agentRow("qwen", 0.5, { failed: 2, runs: 3 })] },
+    retrieval: { ...METRICS.retrieval, rows: [] },
+  });
+
+  assert.ok(html.includes("<strong>&lt;b&gt;ling&lt;/b&gt;</strong>"));
+  assert.ok(html.includes('<td class="num best">90.0%</td><td class="num">100.0%</td>')); // all 100%: no winner
+  assert.ok(html.includes('<td class="num">50.0%</td>'));
+  assert.ok(html.includes('title="Facts match &lt;the data&gt;"'));
+  assert.ok(html.includes("<span>27 conversations · 2026-10-05 10:00 UTC</span><span>embeddings qwen</span>"));
+  assert.ok(html.includes("mean of 3 runs") && html.includes('<span class="failed">2 failed</span>'));
+  assert.ok(html.includes('<td class="num">4.6</td><td class="num">21k</td>'));
+  assert.ok(html.includes('<a href="https://langfuse.example/run?a=1&amp;b=2" target="_blank" rel="noopener">open</a>'));
+  assert.ok(html.includes("No results yet. Run <code>uv run python scripts/benchmark_retrieval.py"));
+});
+
+test("retrieval rows show their ranking", () => {
+  const row = { ...agentRow("BM25", null), ranking: "sparse", items: 188, embedding_model: null, scores: { reciprocal_rank: 0.985 }, urls: [] };
+  const html = renderBenchmarks({ agent: { ...METRICS.agent, rows: [] }, retrieval: { ...METRICS.retrieval, rows: [row] } });
+
+  assert.ok(html.includes("<td>BM25</td>") && html.includes("188 queries"));
+  assert.ok(html.includes('<td class="num">98.5%</td>') && html.includes("<td>–</td>")); // one row: nothing to beat
 });

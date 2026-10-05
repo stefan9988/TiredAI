@@ -226,3 +226,108 @@ export function renderToolCalls(calls) {
     })
     .join("");
 }
+
+// The benchmark results replace the chat at /?view=benchmarks.
+export const BENCHMARKS_URL = "/?view=benchmarks";
+
+export function isBenchmarksUrl(search) {
+  return new URLSearchParams(search).get("view") === "benchmarks";
+}
+
+function percent(value) {
+  return value === null || value === undefined ? "–" : `${(value * 100).toFixed(1)}%`;
+}
+
+function detail(name, value) {
+  if (value === null || value === undefined) return "–";
+  if (name.includes("tokens")) return value >= 1000 ? `${Math.round(value / 1000).toLocaleString("en-US")}k` : String(Math.round(value));
+  return value < 1 ? value.toFixed(2) : value.toFixed(1);
+}
+
+// "2026-10-05T10:00:01Z" -> "2026-10-05 10:00 UTC"
+function when(iso) {
+  return iso ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : "";
+}
+
+// The highest value of each score over the rows, where some row is lower: every row it ties wins,
+// but a score all rows share marks nothing.
+export function bestScores(rows, names) {
+  const best = {};
+  for (const name of names) {
+    const values = rows.map((r) => r.scores[name]).filter((v) => v !== null && v !== undefined);
+    if (values.length && Math.max(...values) > Math.min(...values)) best[name] = Math.max(...values);
+  }
+  return best;
+}
+
+const RANKING_LABELS = { hybrid: "Hybrid (app)", dense: "Dense", sparse: "BM25" };
+
+function benchmarkTable(kind, results) {
+  const names = results.scores.map((s) => s.name);
+  const best = bestScores(results.rows, names);
+  const header = (metric) => `<th class="num" title="${escapeHtml(metric.description)}">${escapeHtml(metric.label)}</th>`;
+  const head = [
+    `<th>${kind === "agent" ? "Chat model" : "Embedding model"}</th>`,
+    kind === "retrieval" ? "<th>Ranking</th>" : "",
+    ...results.scores.map(header),
+    ...results.details.map(header),
+    "<th>Langfuse</th>",
+  ].join("");
+
+  const rows = results.rows.map((row) => {
+    const notes = [`${row.items} ${kind === "agent" ? "conversations" : "queries"}`, when(row.finished_at)];
+    if (row.runs > 1) notes.push(`mean of ${row.runs} runs`);
+    const lines = [notes.join(" · ")];
+    // The index the agent searched, without its provider: "embeddings qwen/qwen3-embedding-8b".
+    if (kind === "agent" && row.embedding_model) lines.push(`embeddings ${row.embedding_model.replace(/^[a-z]+:/, "")}`);
+    if (row.failed) lines.push(`<span class="failed">${row.failed} failed</span>`);
+    const scores = names.map((name) => {
+      const value = row.scores[name];
+      const top = value !== null && value !== undefined && value === best[name];
+      return `<td class="num${top ? " best" : ""}">${percent(value)}</td>`;
+    });
+    const details = results.details.map((d) => `<td class="num">${detail(d.name, row.details[d.name])}</td>`);
+    const links = row.urls.map((url, i) => {
+      const label = row.urls.length > 1 ? `run ${i + 1}` : "open";
+      return `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">${label}</a>`;
+    });
+    return [
+      "<tr>",
+      `<td class="model"><strong>${escapeHtml(row.model)}</strong>${lines.map((l) => (l.startsWith("<span") ? l : `<span>${escapeHtml(l)}</span>`)).join("")}</td>`,
+      kind === "retrieval" ? `<td>${escapeHtml(RANKING_LABELS[row.ranking] ?? row.ranking ?? "")}</td>` : "",
+      ...scores,
+      ...details,
+      `<td>${links.join(" ") || "–"}</td>`,
+      "</tr>",
+    ].join("");
+  });
+  return `<div class="table-scroll"><table class="bench-table"><thead><tr>${head}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
+}
+
+const BENCHMARK_SECTIONS = {
+  agent: {
+    title: "Agent: chat models",
+    about: "Whole conversations through the agent, every turn checked against the catalog: size searches, product " +
+      "inquiries, education, follow-ups and off-topic requests.",
+    command: "uv run python scripts/benchmark_agent.py --llm-model MODEL",
+  },
+  retrieval: {
+    title: "Retrieval: embedding models",
+    about: "Shopper queries through the catalog search: named products (hit@k, MRR) and needs like “mud tires " +
+      "for my jeep” (P@10, nDCG@10).",
+    command: "uv run python scripts/benchmark_retrieval.py --embedding-model MODEL",
+  },
+};
+
+// The benchmarks view: a table per benchmark with the latest result of each model, the best value
+// of each score in bold. Column headers explain their score on hover. All text is escaped.
+export function renderBenchmarks(data) {
+  const sections = Object.entries(BENCHMARK_SECTIONS).map(([kind, section]) => {
+    const results = data[kind];
+    const body = results.rows.length
+      ? benchmarkTable(kind, results)
+      : `<p class="none">No results yet. Run <code>${escapeHtml(section.command)}</code>.</p>`;
+    return `<section class="bench"><h2>${escapeHtml(section.title)}</h2><p class="about">${escapeHtml(section.about)}</p>${body}</section>`;
+  });
+  return `<h1>Benchmarks</h1>${sections.join("")}<p class="about">Scores are averages over the cases; hover a column name for what it measures.</p>`;
+}

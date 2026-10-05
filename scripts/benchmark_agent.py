@@ -130,7 +130,8 @@ def main() -> None:
                     "repeat": f"{repeat}/{args.repeat}",
                 },
             )
-            summary = ex.summarize(label, result, len(data), run_details(result))
+            setup = {"llm_model": model, "embedding_model": embedding, "repeat": repeat}
+            summary = ex.summarize(label, result, len(data), run_details(result), setup)
             summaries.append(summary)
             for case_result in summary.results:
                 passes[model][case_result["case"]].append(case_result["scores"].get("passed", 0))

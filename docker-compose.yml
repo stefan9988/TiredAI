@@ -17,3 +17,4 @@ services:
     volumes:
       - ./data:/app/data      # the catalog CSV goes here; the index and chat history are kept here too
       - ./.cache:/app/.cache  # downloaded models and cached embeddings
+      - ./benchmarks:/app/benchmarks  # benchmark cases and results, shown on the page's Benchmarks view

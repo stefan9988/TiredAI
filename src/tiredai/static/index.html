@@ -10,6 +10,10 @@
   <body>
     <aside class="sidebar">
       <button id="new-chat" type="button" class="new-chat">+ New chat</button>
+      <a id="benchmarks" class="benchmarks-link" href="/?view=benchmarks">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V11M12 20V5M19 20v-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+        Benchmarks
+      </a>
       <nav id="chats" class="chats" aria-label="Chats"></nav>
     </aside>
 
@@ -34,7 +38,9 @@
         </section>
       </main>
 
-      <footer class="bottom">
+      <section id="benchmarks-view" class="benchmarks-view" aria-live="polite" hidden></section>
+
+      <footer id="bottom" class="bottom">
         <form id="composer" class="composer">
           <textarea id="input" rows="1" maxlength="4000" placeholder="Ask about tires…" aria-label="Message"></textarea>
           <button id="send" type="submit">Send</button>

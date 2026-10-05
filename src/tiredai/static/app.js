@@ -1,10 +1,13 @@
 import {
+  BENCHMARKS_URL,
   chatIdFromUrl,
   chatUrl,
   createStatusQueue,
   errorMessage,
   escapeHtml,
+  isBenchmarksUrl,
   parseSSE,
+  renderBenchmarks,
   renderMarkdown,
   renderToolCalls,
 } from "./lib.mjs";
@@ -21,6 +24,9 @@ const details = document.querySelector("#details");
 const detailsTitle = document.querySelector("#details-title");
 const detailsBody = document.querySelector("#details-body");
 const detailsClose = document.querySelector("#details-close");
+const benchmarksLink = document.querySelector("#benchmarks");
+const benchmarksView = document.querySelector("#benchmarks-view");
+const bottom = document.querySelector("#bottom");
 
 // The open chat, also kept in the URL. null for a new chat until its first reply starts.
 let conversationId = null;
@@ -31,6 +37,10 @@ let busy = false;
 const searchesOf = new WeakMap();
 // The button whose searches the side panel shows; null while the panel is closed.
 let detailsFor = null;
+// The benchmark results are shown instead of a chat.
+let showingBenchmarks = false;
+// Counts requests for the results, so only the latest one is shown.
+let benchmarksRequest = 0;
 
 const SEARCH_ICON =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/>' +
@@ -40,6 +50,7 @@ function setBusy(value) {
   busy = value;
   send.disabled = value;
   newChat.disabled = value;
+  benchmarksLink.classList.toggle("busy", value);
   chats.classList.toggle("busy", value);
 }
 
@@ -216,9 +227,42 @@ async function loadChats() {
   renderChats();
 }
 
+function showBenchmarksView(show) {
+  showingBenchmarks = show;
+  messages.hidden = bottom.hidden = show;
+  benchmarksView.hidden = !show;
+  if (show) benchmarksLink.setAttribute("aria-current", "page");
+  else benchmarksLink.removeAttribute("aria-current");
+}
+
+// Shows the latest benchmark results per model in place of the chat; opening it again reloads them.
+async function openBenchmarks() {
+  closeDetails();
+  conversationId = null;
+  renderChats();
+  showBenchmarksView(true);
+  const request = ++benchmarksRequest;
+  const current = () => request === benchmarksRequest && showingBenchmarks;
+  benchmarksView.innerHTML = '<p class="loading">Loading benchmark results…</p>';
+  try {
+    const response = await fetch("/benchmarks");
+    if (!response.ok) {
+      throw new Error(errorMessage(await response.json().catch(() => null), response.status));
+    }
+    const data = await response.json();
+    if (current()) benchmarksView.innerHTML = renderBenchmarks(data);
+  } catch (err) {
+    if (current()) {
+      const reason = escapeHtml(err.message || "something went wrong.");
+      benchmarksView.innerHTML = `<p class="error">Could not load the benchmark results: ${reason}</p>`;
+    }
+  }
+}
+
 // Shows a saved chat, or the empty state for a new one (id null).
 async function openChat(id) {
   closeDetails();
+  showBenchmarksView(false);
   conversationId = id;
   renderChats();
   if (!id) {
@@ -352,15 +396,29 @@ chats.addEventListener("click", (e) => {
 
 newChat.addEventListener("click", () => {
   if (busy) return;
-  if (conversationId) history.pushState(null, "", chatUrl(null));
+  if (conversationId || showingBenchmarks) history.pushState(null, "", chatUrl(null));
   openChat(null);
 });
+
+benchmarksLink.addEventListener("click", (e) => {
+  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  e.preventDefault();
+  if (busy) return;
+  if (!showingBenchmarks) history.pushState(null, "", BENCHMARKS_URL);
+  openBenchmarks();
+});
+
+// The page URL says what to show: the benchmarks, a saved chat, or a new chat.
+function openFromUrl() {
+  if (isBenchmarksUrl(location.search)) openBenchmarks();
+  else openChat(chatIdFromUrl(location.search));
+}
 
 window.addEventListener("popstate", () => {
   // Back/forward can't interrupt a streaming reply, so stay on the open chat.
   if (busy) history.pushState(null, "", chatUrl(conversationId));
-  else openChat(chatIdFromUrl(location.search));
+  else openFromUrl();
 });
 
 loadChats();
-openChat(chatIdFromUrl(location.search));
+openFromUrl();

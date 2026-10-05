@@ -163,6 +163,8 @@ Without flags, both use the models in `.env`. `--check` only validates the cases
 
 **In Langfuse,** the case files are synced to the datasets `tiredai-retrieval` and `tiredai-agent`: changed cases are updated and removed ones archived. Every run is a dataset run named after its model, with the git commit, the system prompt's hash and the agent settings in its metadata. Under the dataset's Experiments tab, runs of different models can be compared score by score. Each case is a trace with its scores. In the agent benchmark that trace holds the usual turn traces (tagged `benchmark`), so a failing turn can be inspected down to the search. The summary is also printed and saved to `benchmarks/results/` as Markdown, with every case's output and scores in a JSON file next to it.
 
+**On the chat page,** the Benchmarks button under New chat shows those results: one table for chat models and one for embedding models with each ranking. Each row is a model's latest run, with repeats averaged. The best value of each score is highlighted, and each row links to its Langfuse run. Hovering a column name explains the score. Benchmarking one model again replaces only its row. Docker mounts `./benchmarks`, so the page there shows new results without a rebuild.
+
 **Cost.** One agent run is roughly 100 chat requests. `:free` models run one conversation at a time, and the 50 requests a day of a free account won't cover a full run. One retrieval run per model and ranking sends about 1,900 observations and scores to Langfuse; `--local` skips that.
 
 ## Getting started
@@ -253,6 +255,7 @@ The server is a local demo without authentication. Interactive docs are at `/doc
 | `POST /chat/stream` | The same, streamed as Server-Sent Events: `start`, then `status`, `tool_call` and `token` events as the agent works, then `end` (or `error`) |
 | `GET /conversations` | Every saved conversation, most recently active first; the title is its first message |
 | `GET /conversations/{id}/messages` | A conversation's messages; each answer lists its tool calls with the data the model received |
+| `GET /benchmarks` | The latest benchmark result of each model, from `benchmarks/results/`, with what each score measures |
 | `GET /health` | Model name and vector store status |
 
 ## Tests
