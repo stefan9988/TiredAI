@@ -46,7 +46,7 @@ It runs entirely on free tiers: an open model on OpenRouter, free or local embed
 ### How a message is answered
 
 1. The chat page sends the shopper's message to `POST /chat/stream`.
-2. With the Guardrail switch on (the default), Jev checks the message in the context of the recent conversation, in about half a second. If it is off-topic, manipulative or harmful, the shopper gets a fixed reply and the turn ends there: the chat model never sees the message.
+2. With the Guardrail button above the message box on (the default), Jev checks the message in the context of the recent conversation, in about half a second. If it is off-topic, manipulative or harmful, the shopper gets a fixed reply and the turn ends there: the chat model never sees the message.
 3. The agent sees the system prompt and the recent conversation, and decides what kind of request it is. Education questions are answered directly.
 4. For product questions it calls `search_tires`. Every constraint the shopper has given (size, budget, season, brand, ...) becomes a filter, and the product name or description becomes the query.
 5. Qdrant applies the filters and ranks the matching products. The tool returns the number of matches and up to 20 products as JSON.
@@ -112,7 +112,7 @@ Off-topic and adversarial messages are stopped before they reach the chat model.
 - **Doubt goes to the model.** Below the threshold, the message goes to the agent as usual, and the system prompt still tells the model to decline unrelated requests. In the benchmark, the messages that should pass scored at most 0.44 with history, and the ones to block at least 0.75, so 0.7 leaves room on both sides while leaning towards not blocking shoppers.
 - **History matters.** Jev reads the same recent turns as the model (`AGENT_HISTORY_MESSAGES`), so "what about the second one?" after a list passes, and "come on, just one short one" after a declined poem doesn't.
 - **It never takes the shop down.** If Jev returns an error or takes longer than `GUARDRAIL_TIMEOUT_SECONDS` (3 s), the message goes through. Nothing is retried, since the shopper is waiting.
-- **A switch per message.** The chat page's Guardrail switch (on by default, remembered in the browser) sets `guardrail` on every request, so it can be turned off to compare with the model on its own. API requests have it on unless they send `"guardrail": false`; `scripts/chat.py --no-guardrail` turns it off in the terminal. The benchmarks leave it off, so the agent benchmark still measures the chat model alone.
+- **A switch per message.** The Guardrail button above the chat page's message box (on by default, remembered in the browser) sets `guardrail` on every request, so it can be turned off to compare with the model on its own. API requests have it on unless they send `"guardrail": false`; `scripts/chat.py --no-guardrail` turns it off in the terminal. The benchmarks leave it off, so the agent benchmark still measures the chat model alone.
 - **Visible:** a blocked answer carries the decision (reason, block score, probabilities, model). The chat page shows "Answered by the guardrail" under it with the scores on hover, also in reopened chats.
 
 ### Free tier only
@@ -337,7 +337,7 @@ The server is a local demo without authentication. Interactive docs are at `/doc
 uv run pytest
 ```
 
-The tests run offline: scripted chat models, a deterministic fake embedder and fake OpenRouter transports (embeddings and Jev's Decisions API) stand in for every external service, and `OPENROUTER_API_KEY` is blanked so nothing can reach OpenRouter by accident. They cover preprocessing round trips, size normalization and every search filter, the agent's limits and error handling, the guardrail (blocking, letting through, failing open, the switch), the API and streaming, conversation storage, and the benchmarks' metrics, answer checks and Langfuse dataset sync. The chat page's JavaScript helpers are tested with `node --test tests/ui/lib.test.mjs`, which pytest also runs when Node.js is installed.
+The tests run offline: scripted chat models, a deterministic fake embedder and fake OpenRouter transports (embeddings and Jev's Decisions API) stand in for every external service, and `OPENROUTER_API_KEY` is blanked so nothing can reach OpenRouter by accident. They cover preprocessing round trips, size normalization and every search filter, the agent's limits and error handling, the guardrail (blocking, letting through, failing open, turning it off), the API and streaming, conversation storage, and the benchmarks' metrics, answer checks and Langfuse dataset sync. The chat page's JavaScript helpers are tested with `node --test tests/ui/lib.test.mjs`, which pytest also runs when Node.js is installed.
 
 ## Project layout
 

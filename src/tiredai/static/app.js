@@ -47,25 +47,48 @@ let benchmarksRequest = 0;
 // The results shown, and how each table is sorted ({agent: {key, direction}, ...}), kept while the page is open.
 let benchmarks = null;
 const benchmarkSort = {};
-// The guardrail switch is on unless this browser turned it off; every message sends its state.
+// The guardrail button is on unless this browser turned it off; every message sends its state.
 const GUARDRAIL_KEY = "tiredai.guardrail";
+let guardrailOn = true;
+// What /health says about the guardrail: {available, model, threshold}; null until it answers.
+let guardrailInfo = null;
+const MAX_INPUT_HEIGHT = 200;
 
 const SEARCH_ICON =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/>' +
   '<path d="m15.5 15.5 5 5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
 
-try {
-  guardrail.checked = localStorage.getItem(GUARDRAIL_KEY) !== "off";
-} catch {
-  // No storage (private window, blocked site data): the switch starts on.
+function showGuardrail() {
+  guardrail.setAttribute("aria-pressed", String(guardrailOn));
+  if (guardrailInfo && !guardrailInfo.available) {
+    guardrail.disabled = true;
+    guardrail.title = "The guardrail is unavailable: it needs OPENROUTER_API_KEY.";
+    return;
+  }
+  const model = guardrailInfo?.model ?? "The guardrail";
+  guardrail.title = guardrailOn
+    ? `Guardrail on: ${model} checks each message first and answers off-topic and adversarial ones itself` +
+      (guardrailInfo ? ` (block score ${guardrailInfo.threshold} or more)` : "") +
+      ". Click to send messages straight to the chat model."
+    : `Guardrail off: messages go straight to the chat model. Click to check them with ${model} first.`;
 }
 
-guardrail.addEventListener("change", () => {
+try {
+  guardrailOn = localStorage.getItem(GUARDRAIL_KEY) !== "off";
+} catch {
+  // No storage (private window, blocked site data): the guardrail starts on.
+}
+showGuardrail();
+
+guardrail.addEventListener("click", () => {
+  guardrailOn = !guardrailOn;
+  showGuardrail();
   try {
-    localStorage.setItem(GUARDRAIL_KEY, guardrail.checked ? "on" : "off");
+    localStorage.setItem(GUARDRAIL_KEY, guardrailOn ? "on" : "off");
   } catch {
     // The choice still holds until the page is reloaded.
   }
+  input.focus();
 });
 
 function setBusy(value) {
@@ -83,15 +106,8 @@ fetch("/health")
       h.vector_store.status === "ok" ? `${h.vector_store.points.toLocaleString()} tires` : "catalog unavailable";
     meta.textContent = `${h.model} · ${catalog}`;
     meta.classList.toggle("warn", h.vector_store.status !== "ok");
-    const toggle = guardrail.closest(".toggle");
-    if (h.guardrail.available) {
-      toggle.title =
-        `${h.guardrail.model} checks each message before the chat model sees it, and answers the off-topic ` +
-        `and adversarial ones itself (block score ${h.guardrail.threshold} or more). Off: messages go straight to the chat model.`;
-    } else {
-      guardrail.disabled = true;
-      toggle.title = "The guardrail is unavailable: it needs OPENROUTER_API_KEY.";
-    }
+    guardrailInfo = h.guardrail;
+    showGuardrail();
   })
   .catch(() => {
     meta.textContent = "API unreachable";
@@ -346,7 +362,7 @@ async function sendMessage(text) {
       body: JSON.stringify({
         message: text,
         conversation_id: conversationId ?? undefined,
-        guardrail: guardrail.checked && !guardrail.disabled,
+        guardrail: guardrailOn && !guardrail.disabled,
       }),
     });
     if (!response.ok) {
@@ -386,9 +402,13 @@ async function sendMessage(text) {
   }
 }
 
+// Fits the message box to its text. With box-sizing: border-box the height includes the borders,
+// which scrollHeight leaves out; a scrollbar shows only once the text is taller than the maximum.
 function resize() {
   input.style.height = "auto";
-  input.style.height = `${Math.min(input.scrollHeight, 200)}px`;
+  const height = input.scrollHeight + input.offsetHeight - input.clientHeight;
+  input.style.height = `${Math.min(height, MAX_INPUT_HEIGHT)}px`;
+  input.style.overflowY = height > MAX_INPUT_HEIGHT ? "auto" : "hidden";
 }
 
 form.addEventListener("submit", (e) => {
@@ -401,6 +421,13 @@ form.addEventListener("submit", (e) => {
 });
 
 input.addEventListener("input", resize);
+// The text rewraps when the box gets wider or narrower (the window, the side panel), so its height follows.
+let inputWidth = 0;
+new ResizeObserver(([entry]) => {
+  if (entry.contentRect.width === inputWidth) return;
+  inputWidth = entry.contentRect.width;
+  resize();
+}).observe(input);
 input.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
     e.preventDefault();

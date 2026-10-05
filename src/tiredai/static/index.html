@@ -41,18 +41,19 @@
       <section id="benchmarks-view" class="benchmarks-view" aria-live="polite" hidden></section>
 
       <footer id="bottom" class="bottom">
+        <div class="composer-tools">
+          <button id="guardrail" type="button" class="guardrail-toggle" aria-pressed="true"
+                  title="Checks each message before the chat model sees it">
+            <svg class="on" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 3 8.3 7 9.5 4-1.2 7-5.1 7-9.5V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg>
+            <svg class="off" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 3 8.3 7 9.5 4-1.2 7-5.1 7-9.5V6l-7-3Z"/><path d="m4 4 16 16"/></svg>
+            <span>Guardrail</span>
+          </button>
+        </div>
         <form id="composer" class="composer">
           <textarea id="input" rows="1" maxlength="4000" placeholder="Ask about tires…" aria-label="Message"></textarea>
           <button id="send" type="submit">Send</button>
         </form>
-        <div class="composer-options">
-          <label class="toggle" title="Checks each message before the chat model sees it">
-            <input id="guardrail" type="checkbox" role="switch" checked />
-            <span class="switch" aria-hidden="true"></span>
-            <span>Guardrail</span>
-          </label>
-          <p class="hint">Enter to send, Shift+Enter for a new line.</p>
-        </div>
+        <p class="hint">Enter to send, Shift+Enter for a new line.</p>
       </footer>
     </div>
 
