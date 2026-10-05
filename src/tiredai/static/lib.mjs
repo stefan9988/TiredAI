@@ -244,7 +244,7 @@ export function renderGuardrailNote(decision) {
   if (decision.model) details.push(decision.model);
   return (
     `<p class="guardrail-note" title="${escapeHtml(details.join(" · "))}">` +
-    `${SHIELD_ICON}<span>Answered by the guardrail: ${escapeHtml(reason)}</span></p>`
+    `${SHIELD_ICON}<span>Blocked by the guardrail: ${escapeHtml(reason)}</span></p>`
   );
 }
 

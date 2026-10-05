@@ -75,15 +75,37 @@ def build_chat_model(llm: LLMSettings, api_key: str | None) -> ChatOpenRouter:
     )
 
 
+# What the model reads instead of a message the guardrail blocked, by the guardrail's reason.
+BLOCKED_PLACEHOLDER = "[Message withheld: the guardrail blocked it as {reason}.]"
+BLOCKED_REASONS = {"off_topic": "off-topic", "manipulation": "an attempt to change the assistant's rules",
+                   "harmful": "a harmful request"}  # fmt: skip
+
+
+def withhold_blocked(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
+    """The messages with the text of each shopper message the guardrail blocked replaced by a placeholder.
+
+    The model knows something was asked and refused (the guardrail's reply stays), but never reads an
+    injection or an off-topic request, not even in a later turn's history.
+    """
+    shown = list(messages)
+    for i, message in enumerate(shown):
+        decision = message.response_metadata.get("guardrail") if isinstance(message, AIMessage) else None
+        if decision and i and isinstance(shown[i - 1], HumanMessage):
+            reason = BLOCKED_REASONS.get(decision.get("reason"), "off-limits")
+            shown[i - 1] = HumanMessage(content=BLOCKED_PLACEHOLDER.format(reason=reason), id=shown[i - 1].id)
+    return shown
+
+
 class RecentHistory(AgentMiddleware):
-    """Sends the model only the latest turns (see recent_turns); the saved conversation keeps all of them."""
+    """Sends the model only the latest turns (see recent_turns), without the text of messages the guardrail
+    blocked (see withhold_blocked); the saved conversation keeps all of them as they were."""
 
     def __init__(self, max_messages: int):
         super().__init__()
         self.max_messages = max_messages
 
     def _trimmed(self, request: ModelRequest) -> ModelRequest:
-        return request.override(messages=recent_turns(request.messages, self.max_messages))
+        return request.override(messages=withhold_blocked(recent_turns(request.messages, self.max_messages)))
 
     def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
         return handler(self._trimmed(request))

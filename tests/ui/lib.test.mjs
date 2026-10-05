@@ -423,7 +423,7 @@ test("an answer from the guardrail says why, with the scores on hover", () => {
     model: "typesafe/jev-1.13-20260917",
   });
 
-  assert.match(note, /<span>Answered by the guardrail: off-topic<\/span>/);
+  assert.match(note, /<span>Blocked by the guardrail: off-topic<\/span>/);
   assert.match(
     note,
     /title="Block score 0\.96 \(blocks at 0\.70\) · in scope 0\.04 · manipulation 0\.02 · harmful 0\.01 · typesafe\/jev-1\.13-20260917"/,
