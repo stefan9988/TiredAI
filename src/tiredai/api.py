@@ -94,12 +94,15 @@ class BenchmarkMetric(BaseModel):
     name: str
     label: str
     description: str
+    better: Literal["higher", "lower"] | None = Field(description="Which way the metric is better; None for neither.")
 
 
 class BenchmarkRow(BaseModel):
-    model: str = Field(description="The chat model (agent) or embedding model (retrieval; BM25 for sparse ranking).")
+    model: str = Field(description="The chat model (agent), embedding model (retrieval; BM25 for sparse ranking) or guard model.")
     embedding_model: str | None = Field(description="Agent: the embedding model of the index it searched.")
     ranking: str | None = Field(description="Retrieval: hybrid, dense or sparse.")
+    variant: str | None = Field(description="Guardrail: how much of the conversation it saw: message, recent or full.")
+    threshold: float | None = Field(description="Guardrail: messages were blocked at this block score or above.")
     finished_at: str
     runs: int = Field(description="Runs averaged into this row (--repeat).")
     items: int
@@ -118,6 +121,7 @@ class BenchmarkResults(BaseModel):
 class BenchmarksResponse(BaseModel):
     agent: BenchmarkResults
     retrieval: BenchmarkResults
+    guardrail: BenchmarkResults
 
 
 class HealthResponse(BaseModel):
@@ -245,12 +249,17 @@ def create_app(
         rows = await asyncio.to_thread(reports.latest_results, benchmark_results)
 
         def results(kind: str) -> BenchmarkResults:
-            def metrics(info):
-                return [BenchmarkMetric(name=n, label=label, description=d) for n, label, d in info[kind]]
+            def metrics(group, info):
+                return [
+                    BenchmarkMetric(name=n, label=label, description=d, better=reports.better(group, n))
+                    for n, label, d in info[kind]
+                ]
 
-            return BenchmarkResults(scores=metrics(reports.SCORES), details=metrics(reports.DETAILS), rows=rows[kind])
+            return BenchmarkResults(
+                scores=metrics("scores", reports.SCORES), details=metrics("details", reports.DETAILS), rows=rows[kind]
+            )
 
-        return BenchmarksResponse(agent=results("agent"), retrieval=results("retrieval"))
+        return BenchmarksResponse(**{kind: results(kind) for kind in reports.SCORES})
 
     @app.get("/health")
     async def health(request: Request) -> HealthResponse:

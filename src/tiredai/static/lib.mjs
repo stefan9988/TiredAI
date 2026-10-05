@@ -241,6 +241,8 @@ function percent(value) {
 function detail(name, value) {
   if (value === null || value === undefined) return "–";
   if (name.includes("tokens")) return value >= 1000 ? `${Math.round(value / 1000).toLocaleString("en-US")}k` : String(Math.round(value));
+  if (name.startsWith("cost")) return `$${value.toFixed(value < 0.01 ? 4 : 2)}`;
+  if (name === "auc" || name.endsWith("threshold")) return value.toFixed(2);
   return value < 1 ? value.toFixed(2) : value.toFixed(1);
 }
 
@@ -249,27 +251,63 @@ function when(iso) {
   return iso ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : "";
 }
 
-// The highest value of each score over the rows, where some row is lower: every row it ties wins,
-// but a score all rows share marks nothing.
-export function bestScores(rows, names) {
+// The best value of each score over the rows (the highest, or the lowest where `better` is "lower"),
+// where some row is worse: every row it ties wins, but a score all rows share marks nothing.
+export function bestScores(rows, scores) {
   const best = {};
-  for (const name of names) {
+  for (const { name, better } of scores) {
+    if (better !== "higher" && better !== "lower") continue;
     const values = rows.map((r) => r.scores[name]).filter((v) => v !== null && v !== undefined);
-    if (values.length && Math.max(...values) > Math.min(...values)) best[name] = Math.max(...values);
+    if (!values.length || Math.max(...values) === Math.min(...values)) continue;
+    best[name] = better === "lower" ? Math.min(...values) : Math.max(...values);
   }
   return best;
 }
 
 const RANKING_LABELS = { hybrid: "Hybrid (app)", dense: "Dense", sparse: "BM25" };
 const RANKING_ORDER = ["hybrid", "dense", "sparse"];
+const VARIANT_LABELS = { message: "Message only", recent: "Recent (agent's window)", full: "Whole conversation" };
+const VARIANT_ORDER = ["message", "recent", "full"];
 
-// A row's value in a column: the model name, the ranking's place (the app's first), or a score or detail.
+// The index an agent row searched, without its provider: "qwen/qwen3-embedding-8b".
+function embeddingName(row) {
+  return row.embedding_model ? row.embedding_model.replace(/^[a-z]+:/, "") : null;
+}
+
+function place(order, value) {
+  const i = order.indexOf(value);
+  return i < 0 ? order.length : i;
+}
+
+// The columns after the model that say what else a row ran with: the cell's text, and the value
+// it sorts by (names A–Z; rankings and variants in their own order, the app's ranking first).
+const SETUP_COLUMNS = {
+  agent: [
+    {
+      key: "embedding_model", label: "Embeddings", description: "The embedding model of the index the agent searched",
+      text: embeddingName, sort: (row) => embeddingName(row)?.toLowerCase() ?? null,
+    },
+  ],
+  retrieval: [
+    { key: "ranking", label: "Ranking", text: (row) => RANKING_LABELS[row.ranking] ?? row.ranking, sort: (row) => place(RANKING_ORDER, row.ranking) },
+  ],
+  guardrail: [
+    {
+      key: "variant", label: "Conversation", description: "How much of the conversation before the message the guard saw",
+      text: (row) => VARIANT_LABELS[row.variant] ?? row.variant, sort: (row) => place(VARIANT_ORDER, row.variant),
+    },
+    {
+      key: "threshold", label: "Threshold", description: "Messages were blocked at this block score or above", numeric: true,
+      text: (row) => detail("threshold", row.threshold), sort: (row) => row.threshold ?? null,
+    },
+  ],
+};
+const SETUP_SORT = Object.fromEntries(Object.values(SETUP_COLUMNS).flat().map((c) => [c.key, c.sort]));
+
+// A row's value in a column: the model name, a setup column's value, or a score or detail.
 function sortValue(row, key) {
   if (key === "model") return row.model.toLowerCase();
-  if (key === "ranking") {
-    const place = RANKING_ORDER.indexOf(row.ranking);
-    return place < 0 ? RANKING_ORDER.length : place;
-  }
+  if (key in SETUP_SORT) return SETUP_SORT[key](row);
   return row.scores[key] ?? row.details[key] ?? null;
 }
 
@@ -287,8 +325,8 @@ export function sortRows(rows, sort) {
   });
 }
 
-// Clicking a column sorts it `first` ("desc" for scores, "asc" for times, tokens and names); clicking
-// the sorted column again turns it around.
+// Clicking a column sorts it `first` (the better values first: "desc" for most scores, "asc" for
+// times, tokens, false blocks and names); clicking the sorted column again turns it around.
 export function nextSort(current, key, first) {
   if (current?.key === key) return { key, direction: current.direction === "asc" ? "desc" : "asc" };
   return { key, direction: first };
@@ -307,25 +345,25 @@ function sortHeader(kind, key, label, { first, sort, numeric = false, descriptio
 }
 
 function benchmarkTable(kind, results, sort) {
-  const names = results.scores.map((s) => s.name);
-  const best = bestScores(results.rows, names);
-  const metric = (first) => (m) => sortHeader(kind, m.name, m.label, { first, sort, numeric: true, description: m.description });
+  const section = BENCHMARK_SECTIONS[kind];
+  const setup = SETUP_COLUMNS[kind] ?? [];
+  const best = bestScores(results.rows, results.scores);
+  const metric = (m) =>
+    sortHeader(kind, m.name, m.label, { first: m.better === "higher" ? "desc" : "asc", sort, numeric: true, description: m.description });
   const head = [
-    sortHeader(kind, "model", kind === "agent" ? "Chat model" : "Embedding model", { first: "asc", sort }),
-    kind === "retrieval" ? sortHeader(kind, "ranking", "Ranking", { first: "asc", sort }) : "",
-    ...results.scores.map(metric("desc")), // higher is better
-    ...results.details.map(metric("asc")), // time and tokens: lower is better
+    sortHeader(kind, "model", section.model, { first: "asc", sort }),
+    ...setup.map((c) => sortHeader(kind, c.key, c.label, { first: "asc", sort, numeric: c.numeric, description: c.description })),
+    ...results.scores.map(metric),
+    ...results.details.map(metric),
     "<th>Langfuse</th>",
   ].join("");
 
   const rows = sortRows(results.rows, sort).map((row) => {
-    const notes = [`${row.items} ${kind === "agent" ? "conversations" : "queries"}`, when(row.finished_at)];
+    const notes = [`${row.items} ${section.items}`, when(row.finished_at)];
     if (row.runs > 1) notes.push(`mean of ${row.runs} runs`);
     const lines = [notes.join(" · ")];
-    // The index the agent searched, without its provider: "embeddings qwen/qwen3-embedding-8b".
-    if (kind === "agent" && row.embedding_model) lines.push(`embeddings ${row.embedding_model.replace(/^[a-z]+:/, "")}`);
     if (row.failed) lines.push(`<span class="failed">${row.failed} failed</span>`);
-    const scores = names.map((name) => {
+    const scores = results.scores.map(({ name }) => {
       const value = row.scores[name];
       const top = value !== null && value !== undefined && value === best[name];
       return `<td class="num${top ? " best" : ""}">${percent(value)}</td>`;
@@ -338,7 +376,7 @@ function benchmarkTable(kind, results, sort) {
     return [
       "<tr>",
       `<td class="model"><strong>${escapeHtml(row.model)}</strong>${lines.map((l) => (l.startsWith("<span") ? l : `<span>${escapeHtml(l)}</span>`)).join("")}</td>`,
-      kind === "retrieval" ? `<td>${escapeHtml(RANKING_LABELS[row.ranking] ?? row.ranking ?? "")}</td>` : "",
+      ...setup.map((c) => `<td${c.numeric ? ' class="num"' : ""}>${escapeHtml(c.text(row) ?? "–")}</td>`),
       ...scores,
       ...details,
       `<td>${links.join(" ") || "–"}</td>`,
@@ -351,20 +389,32 @@ function benchmarkTable(kind, results, sort) {
 const BENCHMARK_SECTIONS = {
   agent: {
     title: "Agent: chat models",
+    model: "Chat model",
+    items: "conversations",
     about: "Whole conversations through the agent, every turn checked against the catalog: size searches, product " +
       "inquiries, education, follow-ups and off-topic requests.",
     command: "uv run python scripts/benchmark_agent.py --llm-model MODEL",
   },
   retrieval: {
     title: "Retrieval: embedding models",
+    model: "Embedding model",
+    items: "queries",
     about: "Shopper queries through the catalog search: named products (hit@k, MRR) and needs like “mud tires " +
       "for my jeep” (P@10, nDCG@10).",
     command: "uv run python scripts/benchmark_retrieval.py --embedding-model MODEL",
   },
+  guardrail: {
+    title: "Guardrail: guard models",
+    model: "Guard model",
+    items: "messages",
+    about: "Shopper messages the assistant should handle or stop (off-topic requests, prompt injections, harmful " +
+      "asks), judged with none, some or all of the conversation before them. The guardrail isn't part of the agent yet.",
+    command: "uv run python scripts/benchmark_guardrail.py --model MODEL",
+  },
 };
 
-// The benchmarks view: a table per benchmark with the latest result of each model, the best value
-// of each score in bold. Column headers explain their score on hover and sort the table when
+// The benchmarks view: a table per benchmark with the latest result of each setup, the best value
+// of each score highlighted. Column headers explain their score on hover and sort the table when
 // clicked; `sort` holds each table's sort ({agent: {key, direction}, ...}). All text is escaped.
 export function renderBenchmarks(data, sort = {}) {
   const sections = Object.entries(BENCHMARK_SECTIONS).map(([kind, section]) => {

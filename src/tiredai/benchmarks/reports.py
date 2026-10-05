@@ -1,8 +1,10 @@
 """The latest benchmark results per model, read from the reports in benchmarks/results/, for the chat page.
 
-Every benchmark run writes <time>-<kind>.json (see experiments.write_report). A model's row comes
-from the newest report that has it, so benchmarking one model again replaces only its row. Repeats
-of a model in one report (--repeat) are averaged into one row.
+Every benchmark run writes <time>-<kind>.json (see experiments.write_report). A row is a chat model
+with the embedding model it searched with (agent), or an embedding model with a ranking (retrieval).
+A guardrail row is a guard model with how much conversation it saw and its threshold. A row comes
+from the newest report that has it, so benchmarking a setup again replaces only its row.
+Repeats in one report (--repeat) are averaged into one row.
 """
 
 import json
@@ -36,6 +38,11 @@ SCORES = {
         ("precision@10", "P@10", "Share of the top 10 matching every attribute of a descriptive query"),
         ("ndcg@10", "nDCG@10", "Ranking quality of the top 10 for descriptive queries, with partial matches counting partly"),
     ],
+    "guardrail": [
+        ("correct", "Correct", "Messages judged right: allowed when the assistant should handle them, blocked otherwise"),
+        ("false_block", "False blocks", "Messages the assistant should handle that were blocked (lower is better)"),
+        ("caught", "Caught", "Off-topic, manipulative and harmful messages that were blocked"),
+    ],
 }  # fmt: skip
 DETAILS = {
     "agent": [
@@ -45,8 +52,25 @@ DETAILS = {
         ("output_tokens", "Tokens out", "Completion tokens over the whole run"),
     ],
     "retrieval": [("seconds_per_query", "s / query", "Mean time per query, embedding included")],
+    "guardrail": [
+        ("auc", "AUC", "ROC AUC of the block score: how well it separates allow from block, whatever the threshold"),
+        ("best_threshold", "Best threshold", "The threshold that would have given the best balanced accuracy"),
+        ("seconds", "s / message", "Mean time to judge a message"),
+        ("p95_seconds", "p95 s", "95% of messages were judged within this time"),
+        ("input_tokens", "Tokens in", "Prompt tokens over the whole run"),
+        ("cost_usd", "Cost", "What the whole run cost on OpenRouter"),
+    ],
 }
+# Which way a metric is better, where it isn't the usual: scores higher, details (times, tokens, cost) lower.
+# None: neither, like a threshold.
+BETTER = {"false_block": "lower", "auc": "higher", "best_threshold": None}
 RANKINGS = ("hybrid", "dense", "sparse")
+VARIANTS = ("message", "recent", "full")
+
+
+def better(group: str, name: str) -> str | None:
+    """'higher', 'lower' or None: which way metric `name` of SCORES or DETAILS (`group`) is better."""
+    return BETTER.get(name, "higher" if group == "scores" else "lower")
 
 
 def _finished_at(stem: str) -> str | None:
@@ -59,7 +83,9 @@ def _finished_at(stem: str) -> str | None:
 def _key(kind: str, run: dict):
     setup = run.get("setup") or {}
     if kind == "agent":
-        return setup.get("llm_model") or run["label"]
+        return setup.get("llm_model") or run["label"], setup.get("embedding_model")
+    if kind == "guardrail":
+        return setup.get("guard_model") or run["label"], setup.get("variant"), setup.get("threshold")
     return (setup.get("embedding_model"), setup.get("ranking")) if setup else run["label"]
 
 
@@ -69,12 +95,16 @@ def _row(kind: str, finished_at: str, runs: list[dict]) -> dict:
     details = dict.fromkeys(name for run in runs for name in run.get("details", {}))
     if kind == "agent":
         model = setup.get("llm_model") or runs[0]["label"]
+    elif kind == "guardrail":
+        model = setup.get("guard_model") or runs[0]["label"]
     else:
         model = setup.get("embedding_model") or ("BM25" if setup.get("ranking") == "sparse" else runs[0]["label"])
     return {
         "model": model,
         "embedding_model": setup.get("embedding_model") if kind == "agent" else None,
         "ranking": setup.get("ranking"),
+        "variant": setup.get("variant"),
+        "threshold": setup.get("threshold"),
         "finished_at": finished_at,
         "runs": len(runs),
         "items": runs[0]["items"],
@@ -86,10 +116,11 @@ def _row(kind: str, finished_at: str, runs: list[dict]) -> dict:
 
 
 def latest_results(directory: Path) -> dict[str, list[dict]]:
-    """Per kind ('agent', 'retrieval'), one row per model (and ranking) from the newest report that has it.
+    """Per kind ('agent', 'retrieval'), one row per setup from the newest report that has it.
 
     Agent rows are sorted by the share of conversations passed, retrieval rows by ranking (hybrid
-    first, as the app uses it) and then MRR.
+    first, as the app uses it) and then MRR, guardrail rows by accuracy and then how much of the
+    conversation the guard saw (the least first).
     """
     newest: dict[tuple, tuple[str, list[dict]]] = {}
     for path in sorted(directory.glob("*.json")):  # names start with the time, so later reports come last
@@ -114,4 +145,6 @@ def latest_results(directory: Path) -> dict[str, list[dict]]:
     rows["agent"].sort(key=lambda r: -(r["scores"].get("passed") or 0))
     rank = {name: i for i, name in enumerate(RANKINGS)}
     rows["retrieval"].sort(key=lambda r: (rank.get(r["ranking"], len(rank)), -(r["scores"].get("reciprocal_rank") or 0)))
+    seen = {name: i for i, name in enumerate(VARIANTS)}
+    rows["guardrail"].sort(key=lambda r: (-(r["scores"].get("correct") or 0), seen.get(r["variant"], len(seen))))
     return rows

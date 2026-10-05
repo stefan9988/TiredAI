@@ -277,19 +277,35 @@ test("the benchmarks view has its own URL", () => {
 const METRICS = {
   agent: {
     scores: [
-      { name: "passed", label: "Passed", description: "Every check passed" },
-      { name: "groundedness", label: "Grounded", description: "Facts match <the data>" },
+      { name: "passed", label: "Passed", description: "Every check passed", better: "higher" },
+      { name: "groundedness", label: "Grounded", description: "Facts match <the data>", better: "higher" },
     ],
     details: [
-      { name: "seconds_per_turn", label: "s / turn", description: "Mean time" },
-      { name: "input_tokens", label: "Tokens in", description: "Prompt tokens" },
+      { name: "seconds_per_turn", label: "s / turn", description: "Mean time", better: "lower" },
+      { name: "input_tokens", label: "Tokens in", description: "Prompt tokens", better: "lower" },
     ],
   },
   retrieval: {
-    scores: [{ name: "reciprocal_rank", label: "MRR", description: "Mean reciprocal rank" }],
+    scores: [{ name: "reciprocal_rank", label: "MRR", description: "Mean reciprocal rank", better: "higher" }],
     details: [],
   },
+  guardrail: {
+    scores: [
+      { name: "correct", label: "Correct", description: "Judged right", better: "higher" },
+      { name: "false_block", label: "False blocks", description: "Blocked by mistake", better: "lower" },
+    ],
+    details: [
+      { name: "auc", label: "AUC", description: "ROC AUC", better: "higher" },
+      { name: "best_threshold", label: "Best threshold", description: "Best balanced accuracy", better: null },
+      { name: "cost_usd", label: "Cost", description: "What the run cost", better: "lower" },
+    ],
+  },
 };
+
+// The API's response with these rows per benchmark, the others empty.
+function benchmarkData(rows = {}) {
+  return Object.fromEntries(Object.entries(METRICS).map(([kind, metrics]) => [kind, { ...metrics, rows: rows[kind] ?? [] }]));
+}
 
 function agentRow(model, passed, extra = {}) {
   return {
@@ -301,21 +317,25 @@ function agentRow(model, passed, extra = {}) {
 
 test("best scores per column: ties with the best win, a score every row shares marks nothing", () => {
   const rows = [agentRow("a", 0.5), agentRow("b", 0.9), agentRow("c", 0.9)];
-  assert.deepEqual(bestScores(rows, ["passed", "groundedness", "missing"]), { passed: 0.9 });
+  const scores = [...METRICS.agent.scores, { name: "missing", better: "higher" }];
+  assert.deepEqual(bestScores(rows, scores), { passed: 0.9 });
+});
+
+test("best scores: the lowest wins where lower is better, and nothing where neither is", () => {
+  const rows = [{ scores: { false_block: 0.1, best_threshold: 0.4 } }, { scores: { false_block: 0, best_threshold: 0.7 } }];
+  const scores = [{ name: "false_block", better: "lower" }, { name: "best_threshold", better: null }];
+  assert.deepEqual(bestScores(rows, scores), { false_block: 0 });
 });
 
 test("benchmark tables: a row per model, best scores marked, everything escaped", () => {
-  const html = renderBenchmarks({
-    agent: { ...METRICS.agent, rows: [agentRow("<b>ling</b>", 0.9), agentRow("qwen", 0.5, { failed: 2, runs: 3 })] },
-    retrieval: { ...METRICS.retrieval, rows: [] },
-  });
+  const html = renderBenchmarks(benchmarkData({ agent: [agentRow("<b>ling</b>", 0.9), agentRow("qwen", 0.5, { failed: 2, runs: 3 })] }));
 
   assert.ok(html.startsWith("<h1>Benchmark results</h1>"));
   assert.ok(html.includes("<strong>&lt;b&gt;ling&lt;/b&gt;</strong>"));
   assert.ok(html.includes('<td class="num best">90.0%</td><td class="num">100.0%</td>')); // all 100%: no winner
   assert.ok(html.includes('<td class="num">50.0%</td>'));
   assert.ok(html.includes('title="Facts match &lt;the data&gt;"'));
-  assert.ok(html.includes("<span>27 conversations · 2026-10-05 10:00 UTC</span><span>embeddings qwen</span>"));
+  assert.ok(html.includes("<span>27 conversations · 2026-10-05 10:00 UTC</span></td><td>qwen</td>")); // without the provider
   assert.ok(html.includes("mean of 3 runs") && html.includes('<span class="failed">2 failed</span>'));
   assert.ok(html.includes('<td class="num">4.6</td><td class="num">21k</td>'));
   assert.ok(html.includes('<a href="https://langfuse.example/run?a=1&amp;b=2" target="_blank" rel="noopener">open</a>'));
@@ -324,17 +344,42 @@ test("benchmark tables: a row per model, best scores marked, everything escaped"
 
 test("retrieval rows show their ranking", () => {
   const row = { ...agentRow("BM25", null), ranking: "sparse", items: 188, embedding_model: null, scores: { reciprocal_rank: 0.985 }, urls: [] };
-  const html = renderBenchmarks({ agent: { ...METRICS.agent, rows: [] }, retrieval: { ...METRICS.retrieval, rows: [row] } });
+  const html = renderBenchmarks(benchmarkData({ retrieval: [row] }));
 
   assert.ok(html.includes("<td>BM25</td>") && html.includes("188 queries"));
   assert.ok(html.includes('<td class="num">98.5%</td>') && html.includes("<td>–</td>")); // one row: nothing to beat
 });
 
-test("rows sort by a score, a detail, the model or the ranking; missing values go last", () => {
+test("a chat model benchmarked with two embedding models has a row for each", () => {
+  const rows = [agentRow("ling", 0.9), agentRow("ling", 0.8, { embedding_model: "openrouter:openai/text-embedding-3-small" })];
+  const html = renderBenchmarks(benchmarkData({ agent: rows }));
+
+  assert.ok(html.includes('data-sort-key="embedding_model" data-sort-first="asc">Embeddings'));
+  assert.ok(html.includes("</td><td>qwen</td>") && html.includes("</td><td>openai/text-embedding-3-small</td>"));
+});
+
+test("guardrail rows show what the guard saw and its threshold; fewest false blocks marked", () => {
+  const row = (variant, correct, falseBlock, extra = {}) => ({
+    ...agentRow("typesafe/jev-1.13", null), embedding_model: null, variant, threshold: 0.5, items: 116,
+    scores: { correct, false_block: falseBlock }, details: { auc: 1, best_threshold: 0.41, cost_usd: 0.00385 }, ...extra,
+  });
+  const html = renderBenchmarks(benchmarkData({ guardrail: [row("message", 0.991, 0.02), row("recent", 1, 0)] }));
+
+  assert.ok(html.includes('data-sort-key="model" data-sort-first="asc">Guard model'));
+  assert.ok(html.includes("<span>116 messages · 2026-10-05 10:00 UTC</span></td><td>Message only</td><td class=\"num\">0.50</td>"));
+  assert.ok(html.includes("<td>Recent (agent&#39;s window)</td>"));
+  assert.ok(html.includes('<td class="num best">100.0%</td><td class="num best">0.0%</td>')); // most correct, fewest false blocks
+  assert.ok(html.includes('<td class="num">1.00</td><td class="num">0.41</td><td class="num">$0.0039</td>'));
+  assert.ok(html.includes('data-sort-key="false_block" data-sort-first="asc"') && html.includes('data-sort-key="auc" data-sort-first="desc"'));
+  assert.ok(html.includes('data-sort-key="best_threshold" data-sort-first="asc"') && html.includes('data-sort-key="variant" data-sort-first="asc"'));
+  assert.ok(html.includes("No results yet. Run <code>uv run python scripts/benchmark_agent.py"));
+});
+
+test("rows sort by a score, a detail, the model or a setup column; missing values go last", () => {
   const rows = [
-    { model: "b", ranking: "sparse", scores: { passed: 0.5 }, details: { seconds_per_turn: 9 } },
-    { model: "A", ranking: "hybrid", scores: { passed: null }, details: { seconds_per_turn: 4 } },
-    { model: "c", ranking: "dense", scores: { passed: 0.9 }, details: {} },
+    { model: "b", embedding_model: "openrouter:Zeta", ranking: "sparse", variant: "full", threshold: 0.5, scores: { passed: 0.5 }, details: { seconds_per_turn: 9 } },
+    { model: "A", embedding_model: null, ranking: "hybrid", variant: "recent", threshold: null, scores: { passed: null }, details: { seconds_per_turn: 4 } },
+    { model: "c", embedding_model: "fastembed:alpha", ranking: "dense", variant: "message", threshold: 0.3, scores: { passed: 0.9 }, details: {} },
   ];
   const order = (sort) => sortRows(rows, sort).map((r) => r.model);
 
@@ -343,6 +388,9 @@ test("rows sort by a score, a detail, the model or the ranking; missing values g
   assert.deepEqual(order({ key: "seconds_per_turn", direction: "asc" }), ["A", "b", "c"]);
   assert.deepEqual(order({ key: "model", direction: "asc" }), ["A", "b", "c"]);
   assert.deepEqual(order({ key: "ranking", direction: "asc" }), ["A", "c", "b"]); // hybrid, dense, BM25
+  assert.deepEqual(order({ key: "embedding_model", direction: "asc" }), ["c", "b", "A"]); // by name, not provider
+  assert.deepEqual(order({ key: "variant", direction: "asc" }), ["c", "A", "b"]); // message, recent, full
+  assert.deepEqual(order({ key: "threshold", direction: "desc" }), ["b", "c", "A"]);
   assert.equal(sortRows(rows, undefined), rows); // no sort: the API's order
 });
 
@@ -354,11 +402,7 @@ test("a first click sorts the useful way round, a second click turns it around",
 });
 
 test("sortable headers say how their table is sorted", () => {
-  const data = {
-    agent: { ...METRICS.agent, rows: [agentRow("ling", 0.9), agentRow("qwen", 0.5)] },
-    retrieval: { ...METRICS.retrieval, rows: [] },
-  };
-  const html = renderBenchmarks(data, { agent: { key: "passed", direction: "asc" } });
+  const html = renderBenchmarks(benchmarkData({ agent: [agentRow("ling", 0.9), agentRow("qwen", 0.5)] }), { agent: { key: "passed", direction: "asc" } });
 
   assert.ok(html.indexOf("<strong>qwen</strong>") < html.indexOf("<strong>ling</strong>"));
   assert.ok(html.includes('<th class="sortable num" aria-sort="ascending" title="Every check passed">'));
