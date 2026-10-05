@@ -7,10 +7,10 @@ them as candidates.
 
 Facts are checked per line of the answer. A line that names exactly one product owns it, and so do the
 lines after it in the same paragraph until another product is named (a product card with its specs on
-separate lines). Checked facts:
+separate lines). A table row is only about the product it names. Checked facts:
 - prices: must be the owning product's price (or 2 or 4 tires of it), or some seen product's price on a
   line that doesn't name a product, or a number the shopper wrote (a budget). A price without cents may
-  be rounded.
+  be rounded; one with cents may also be the difference between two shown prices (a saving).
 - SKUs: must be among the products the agent saw.
 - tread depth (n/32), mileage warranty, UTQG and recommendation level (n/5): checked against the owning
   product only, since without one they can be general knowledge.
@@ -105,6 +105,12 @@ def _cells(line: str) -> list[str] | None:
     return [cell.strip() for cell in row.strip("|").split("|")] if row.startswith("|") and row.count("|") >= 2 else None
 
 
+def line_key(line: str) -> str:
+    """A product line as matched in answers: without markings in parentheses, which answers often leave
+    out ("Pirelli Cinturato P7 All Season Run Flat (MOExtended)" -> "pirelli cinturato p7 all season run flat")."""
+    return words(re.sub(r"\([^)]*\)", " ", line))
+
+
 def mentions(answer: str, seen: list[dict]) -> list[Mention]:
     """The products of `seen` that the answer names, line by line.
 
@@ -114,7 +120,7 @@ def mentions(answer: str, seen: list[dict]) -> list[Mention]:
     by_sku = {p["sku"]: p for p in seen}
     by_line: dict[str, list[dict]] = {}
     for product in by_sku.values():
-        by_line.setdefault(words(product["line"]), []).append(product)
+        by_line.setdefault(line_key(product["line"]), []).append(product)
 
     found = []
     stock_column = None
@@ -152,6 +158,16 @@ def _price_matches(value: float, has_cents: bool, price: float) -> bool:
     return False
 
 
+def _price_supported(value: float, has_cents: bool, candidates: list[dict], seen: list[dict]) -> bool:
+    """A candidate's price (per tire, pair or set), or, written to the cent, the difference between a
+    candidate's price and another shown one ("$1.93 less than the Nexen")."""
+    if any(_price_matches(value, has_cents, p["price"]) for p in candidates):
+        return True
+    return has_cents and any(
+        _price_matches(value, True, abs(p["price"] - q["price"])) for p in candidates for q in seen if q["sku"] != p["sku"]
+    )
+
+
 def _miles(text: str) -> int:
     text = text.replace(",", "").strip().lower()
     return round(float(text[:-1].strip()) * 1000) if text.endswith("k") else int(text)
@@ -170,13 +186,15 @@ def check_facts(answer: str, seen: list[dict], shopper_numbers: set[float]) -> l
             names_one = len(named) == 1
             if named:
                 owner = by_sku[next(iter(named))] if names_one else None
+            elif _cells(line) is not None:
+                owner = None  # a table row is about its own product, never the row above's
             index += 1
 
             for match in PRICE.finditer(line):
                 value, has_cents = float(match.group(1).replace(",", "") + (match.group(2) or "")), bool(match.group(2))
                 # A line that names the product must quote its price; a line under it may summarize others.
                 candidates = [owner] if owner and names_one else seen
-                supported = value in shopper_numbers or any(_price_matches(value, has_cents, p["price"]) for p in candidates)
+                supported = value in shopper_numbers or _price_supported(value, has_cents, candidates, seen)
                 facts.append(Fact("price", match.group(0), supported))
             for sku in SKU.findall(line):
                 facts.append(Fact("sku", sku, sku in by_sku))

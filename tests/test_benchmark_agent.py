@@ -273,3 +273,79 @@ def test_the_task_records_a_failed_turn_and_stops(settings):
 
     [failed] = output["turns"]  # the second message isn't sent
     assert failed["error"] == "RuntimeError: provider unavailable" and failed["answer"] == ""
+
+
+def test_a_product_lookup_may_spell_the_brand_its_own_way():
+    # Like "ContiCrossContact LX25" for the term "crosscontact".
+    expect = {"intent": "product_inquiry", "product_sku": "NEXEN", "product_terms": ["premiere"]}
+    compound = scores(expect, turn("Nexen Classe Premiere CP672: $84.64", search(["NEXEN"], query="Nexen ClassePremiere CP672")))
+
+    assert compound["intent_accuracy"] == 1
+
+
+@pytest.mark.parametrize(
+    "answer, passes",
+    [
+        ("The Tirex Ultragrip 3000 is not available in our catalog.", True),
+        ("We don't offer the Tirex Ultragrip 3000.", True),
+        ("The Tirex Ultragrip 3000 is not available in 205/55R16.", False),  # suggests other sizes exist
+    ],
+)
+def test_saying_a_product_is_missing(answer, passes):
+    expect = {"intent": "product_inquiry", "not_in_catalog": True, "product_terms": ["ultragrip 3000"]}
+
+    assert scores(expect, turn(answer, search(query="Tirex Ultragrip 3000")))["answer_checks"] == float(passes)
+
+
+def test_calling_the_shown_tire_the_cheapest_answers_something_cheaper():
+    first = (SIZE_SEARCH, turn("GT Radial Champiro UHP A/S at $82.71", search(ALL_SEASON_205, size="205/55R16", season="All Season")))
+    cheaper = {**SIZE_SEARCH, "cheaper_than_previous": True}
+    again = search(["GT"], size="205/55R16", season="All Season", max_price=82.71)
+
+    result = scores(cheaper, first, turn("The cheapest available all-season tire in 205/55R16 is the GT Radial Champiro UHP A/S.", again))
+
+    assert result["answer_checks"] == 1 and result["constraint_correctness"] == 1
+
+
+class FlakyModel(ToolCallingModel):
+    """Fails like an overloaded provider for the first `failures` calls, then replies as scripted."""
+
+    failures: int = 1
+    error: str = "Upstream error from Nvidia: Service temporarily overloaded (code: 503)"
+
+    def _stream(self, messages, *args, **kwargs):
+        if self.failures:
+            self.failures -= 1
+            raise ValueError(self.error)
+        yield from super()._stream(messages, *args, **kwargs)
+
+
+def run_flaky(settings, model) -> tuple[dict, list[float]]:
+    waits = []
+
+    async def sleep(seconds):
+        waits.append(seconds)
+
+    task = ConversationTask(build_agent(settings, model=model), metadata={}, waits=(20, 60), sleep=sleep)
+    return asyncio.run(task(item={"input": {"turns": ["What does UTQG mean?"]}})), waits
+
+
+def test_a_conversation_is_played_again_after_a_provider_error_that_passes(settings):
+    output, waits = run_flaky(settings, FlakyModel(messages=iter([AIMessage(content="Uniform Tire Quality Grading.")]), failures=2))
+
+    assert output["attempts"] == 3 and waits == [20, 60]
+    assert output["turns"][0]["answer"] == "Uniform Tire Quality Grading." and output["turns"][0]["error"] is None
+
+
+def test_errors_that_wont_pass_are_not_retried(settings):
+    quota = FlakyModel(messages=iter([]), failures=5, error="429: Rate limit exceeded: free-models-per-day")
+    output, waits = run_flaky(settings, quota)
+
+    assert output["attempts"] == 1 and waits == []
+    assert "free-models-per-day" in output["turns"][0]["error"]
+
+
+def test_retries_stop_after_the_last_wait(settings):
+    output, waits = run_flaky(settings, FlakyModel(messages=iter([]), failures=10))
+
+    assert output["attempts"] == 3 and waits == [20, 60] and "overloaded" in output["turns"][0]["error"]

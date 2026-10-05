@@ -126,9 +126,9 @@ def check_cases(cases: list[AgentCase], catalog: Catalog) -> list[str]:
                 product = catalog[expect.product_sku]
                 if not product.get("available"):
                     problems.append(f"{where}: {product['name']} is out of stock")
-                if missing := [t for t in terms if f" {t} " not in f" {words(product['name'])} "]:
+                if missing := [t for t in terms if t not in words(product["name"])]:
                     problems.append(f"{where}: product_terms {missing} are not in {product['name']!r}")
             if expect.not_in_catalog:
-                if found := [p["name"] for p in catalog if all(f" {t} " in f" {words(p['name'])} " for t in terms)]:
+                if found := [p["name"] for p in catalog if all(t in words(p["name"]) for t in terms)]:
                     problems.append(f"{where}: not_in_catalog, but {len(found)} products match {terms}, e.g. {found[0]!r}")
     return problems

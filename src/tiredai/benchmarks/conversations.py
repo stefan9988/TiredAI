@@ -23,15 +23,18 @@ Scores of a conversation, each the mean over the turns it applies to:
 - passed: 1 when every score of every turn is 1.
 """
 
+import asyncio
+import re
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from langchain_core.messages import AIMessage
 from langfuse import Evaluation
 
 from tiredai.agent import astream_turn, thread_config
-from tiredai.benchmarks.answers import check_facts, contains_words, has_phrase, meets, mentions, numbers
+from tiredai.benchmarks.answers import check_facts, has_phrase, meets, mentions, numbers, words
 from tiredai.benchmarks.cases import Expect
 from tiredai.benchmarks.catalog import Catalog
 from tiredai.benchmarks.experiments import item_value
@@ -44,11 +47,16 @@ NOT_IN_CATALOG = (
     "couldn't find", "could not find", "can't find", "cannot find", "didn't find", "did not find", "unable to find",
     "don't carry", "do not carry", "don't have", "do not have", "doesn't exist", "does not exist", "no exact match",
     "not found", "no match", "doesn't appear", "does not appear", "not listed", "isn't listed", "don't see", "do not see",
-    "don't stock", "do not stock", "no results",
+    "don't stock", "do not stock", "no results", "not available in our catalog", "not available in the catalog",
+    "not part of our catalog", "don't offer", "do not offer",
 )  # fmt: skip
 # Saying that nothing cheaper is left, when nothing is.
-NOTHING_CHEAPER = ("nothing", "none", "no cheaper", "no other", "already the cheapest", "is the cheapest", "are the cheapest",
-                   "lowest price", "lowest-priced", "least expensive", *NOT_IN_CATALOG)  # fmt: skip
+NOTHING_CHEAPER = ("nothing", "none", "no cheaper", "no other", "the cheapest", "cheapest available", "lowest price",
+                   "lowest-priced", "least expensive", *NOT_IN_CATALOG)  # fmt: skip
+# Provider errors that pass, so the conversation is played again: overloads, rate limits, timeouts. A
+# daily quota that ran out ("free-models-per-day") is not one of them.
+TRANSIENT = re.compile(r"\b(429|500|502|503|504|529)\b|overloaded|temporarily|rate.?limit|timed? ?out", re.IGNORECASE)
+RETRY_WAITS = (20, 60)  # seconds before the second and third attempt
 FILTER_KEYS = {"season": "season", "brand": "brand", "car_type": "carType", "performance": "performance"}
 
 
@@ -64,17 +72,39 @@ def search_record(event: dict) -> dict:
     }
 
 
-class ConversationTask:
-    """Plays an item's shopper messages to the agent, one turn after another, in a new conversation."""
+def transient(error: str | None) -> bool:
+    return bool(error) and "per-day" not in error and bool(TRANSIENT.search(error))
 
-    def __init__(self, agent, metadata: dict):
+
+class ConversationTask:
+    """Plays an item's shopper messages to the agent, one turn after another, in a new conversation.
+
+    When a turn fails with a provider error that passes (TRANSIENT), the whole conversation is played
+    again in a new thread, up to len(RETRY_WAITS) times, so the scores measure the model rather than
+    its provider's load. `attempts` in the output says how many plays it took.
+    """
+
+    def __init__(self, agent, metadata: dict, *, waits: tuple[float, ...] = RETRY_WAITS,
+                 sleep: Callable[[float], Awaitable] = asyncio.sleep):  # fmt: skip
         self.agent = agent
         self.metadata = metadata  # recorded on every turn's trace, like the app does
+        self.waits = waits
+        self.sleep = sleep
 
     async def __call__(self, *, item, **kwargs) -> dict:
+        messages = item_value(item, "input")["turns"]
+        for attempt, wait in enumerate((*self.waits, None), start=1):
+            output = await self._play(messages)
+            error = next((t["error"] for t in output["turns"] if t["error"]), None)
+            if wait is None or not transient(error):
+                return {**output, "attempts": attempt}
+            await self.sleep(wait)
+        raise AssertionError("unreachable")
+
+    async def _play(self, messages: list[str]) -> dict:
         thread_id = f"benchmark-{uuid.uuid4()}"
         turns = []
-        for message in item_value(item, "input")["turns"]:
+        for message in messages:
             turns.append(await self._turn(message, thread_id))
             if turns[-1]["error"]:
                 break  # the conversation can't go on as written
@@ -141,7 +171,8 @@ def _applied(filters: dict, key: str, value) -> bool:
 
 def _query_names(search: dict, terms: list[str]) -> bool:
     query = search["args"].get("query") or ""
-    return bool(query) and all(contains_words(query, term) for term in terms)
+    # As a substring of the words, so a brand's spelling counts too: "ContiCrossContact" names "crosscontact".
+    return bool(query) and all(words(term) in words(query) for term in terms)
 
 
 def _describe(searches: list[dict]) -> str:

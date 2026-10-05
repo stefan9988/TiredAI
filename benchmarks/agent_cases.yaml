@@ -2,6 +2,10 @@
 # see Expect in src/tiredai/benchmarks/cases.py for the fields and conversations.py for the scores.
 # Products, sizes and prices are real catalog rows; `uv run python scripts/benchmark_agent.py --check`
 # verifies every case still fits the catalog.
+#
+# may_ask: the system prompt (and the requirements) say to ask about the preferences that matter
+# (season, performance, budget) before recommending, unless the shopper gave them. So a size search
+# that leaves some of them out may ask first instead of searching.
 
 # --- Size search -------------------------------------------------------------------------------------
 
@@ -21,6 +25,7 @@
     - user: Show me winter tires in 225/45R17.
       expect:
         intent: size_search
+        may_ask: true
         constraints: {size: 225/45R17, season: Winter}
 
 - id: size-265-70r17-budget
@@ -29,6 +34,7 @@
     - user: I need tires for my truck, 265/70R17, under $150 each.
       expect:
         intent: size_search
+        may_ask: true
         constraints: {size: 265/70R17, max_price: 150}
 
 - id: size-195-65r15-budget
@@ -37,6 +43,7 @@
     - user: Do you have 195/65R15 tires under $70?
       expect:
         intent: size_search
+        may_ask: true
         constraints: {size: 195/65R15, max_price: 70}
 
 - id: size-loose-format
@@ -56,6 +63,7 @@
     - user: lt265/70r17 all terrain tires
       expect:
         intent: size_search
+        may_ask: true
         constraints: {size: LT265/70R17, performance: All Terrain}
 
 - id: size-brand-typo
@@ -86,6 +94,7 @@
     - user: Show me all-season tires in 205/55R16 under $150.
       expect:
         intent: size_search
+        may_ask: true
         constraints: {size: 205/55R16, season: All Season, max_price: 150}
     - user: Show me something cheaper.
       expect:
@@ -100,6 +109,7 @@
     - user: Winter tires in 225/45R17 please.
       expect:
         intent: size_search
+        may_ask: true
         constraints: {size: 225/45R17, season: Winter}
     - user: What about all-season ones in the same size?
       expect:

@@ -139,3 +139,26 @@ def test_phrases_match_whole_words():
     assert not has_phrase("I'm TiredAI.", "tire")
     assert has_phrase("It costs $181.86.", "$181.86") and has_phrase("We don’t carry it", "don't carry")
     assert not has_phrase("discount codes: none", "discount code:")
+
+
+def test_markings_in_parentheses_may_be_left_out():
+    seen = list(Catalog([tire("RF", "Pirelli Cinturato P7 All Season Run Flat (MOExtended) 225/45R17 91H", "225/45R17", 239.04)]))
+
+    assert [m.skus for m in mentions("The **Pirelli Cinturato P7 All Season Run Flat** is $239.04.", seen)] == [("RF",)]
+
+
+def test_a_table_row_is_about_its_own_product_only():
+    answer = """| Tire | Price | Rating |
+|---|---|---|
+| **Nexen Classe Premiere CP672** | $84.64 | 4/5 |
+| **Some Tire Not Shown** | $97.77 | 3/5 |"""
+
+    # The second row names no product the agent saw: its 3/5 isn't checked against the Nexen.
+    assert facts(answer) == [("price", "$84.64", True), ("recommendations", "4/5", True), ("price", "$97.77", False)]
+
+
+def test_a_saving_between_two_shown_prices_is_supported_to_the_cent():
+    assert facts("The Nexen Classe Premiere CP672 is $84.64, $40.35 less than the General.") == [
+        ("price", "$84.64", True), ("price", "$40.35", True),  # 124.99 - 84.64
+    ]  # fmt: skip
+    assert facts("Nexen Classe Premiere CP672: about $40 less") == [("price", "$40", False)]  # a round amount could be anything
