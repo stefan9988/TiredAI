@@ -10,7 +10,8 @@ lines after it in the same paragraph until another product is named (a product c
 separate lines). A table row is only about the product it names. Checked facts:
 - prices: must be the owning product's price (or 2 or 4 tires of it), or some seen product's price on a
   line that doesn't name a product, or a number the shopper wrote (a budget). A price without cents may
-  be rounded; one with cents may also be the difference between two shown prices (a saving).
+  be rounded; one with cents may also be the difference between two shown prices (a saving). A price
+  after "under", "up to" and the like is a bound, not a fact, and isn't checked.
 - SKUs: must be among the products the agent saw.
 - tread depth (n/32), mileage warranty, UTQG and recommendation level (n/5): checked against the owning
   product only, since without one they can be general knowledge.
@@ -34,6 +35,8 @@ UNAVAILABLE = ("out of stock", "not in stock", "unavailable", "not available", "
 NO_STOCK_CELL = re.compile(r"\b(no|out|false|unavailable)\b|❌|✗|✖")  # a table's in-stock column saying no
 STOCK_HEADER = re.compile(r"avail|stock")
 SETS = (1, 2, 4)  # a price can be quoted per tire, per pair or per set of four
+# A price after these words is a bound ("the three options under $90"), not a product's price.
+BOUND = re.compile(r"\b(under|below|less than|up to|within|over|above|more than|at most|at least|max|min)\s*$")
 
 
 def plain(text: str) -> str:
@@ -114,8 +117,8 @@ def line_key(line: str) -> str:
 def mentions(answer: str, seen: list[dict]) -> list[Mention]:
     """The products of `seen` that the answer names, line by line.
 
-    A product is called out of stock by a phrase on its line, or in a table by an availability column
-    saying no ("| Available | ... | ❌ No |").
+    A product is called out of stock by a phrase on its line, by a heading such as "Out of stock:" above
+    it in the same paragraph, or in a table by an availability column saying no ("| Available | ❌ No |").
     """
     by_sku = {p["sku"]: p for p in seen}
     by_line: dict[str, list[dict]] = {}
@@ -123,26 +126,33 @@ def mentions(answer: str, seen: list[dict]) -> list[Mention]:
         by_line.setdefault(line_key(product["line"]), []).append(product)
 
     found = []
-    stock_column = None
-    for index, line in enumerate(answer_lines(answer)):
-        text = f" {words(line)} "
-        unavailable = any(phrase in plain(line) for phrase in UNAVAILABLE)
-        cells = _cells(line)
-        if cells is None:
-            stock_column = None
-        elif header := [i for i, cell in enumerate(cells) if STOCK_HEADER.search(plain(cell))]:
-            stock_column = header[0]
-        elif stock_column is not None and stock_column < len(cells):
-            unavailable = unavailable or bool(NO_STOCK_CELL.search(plain(cells[stock_column])))
-        named = [key for key in by_line if f" {key} " in text]
-        # "Eagle F1 Asymmetric SUV-4X4" also contains the line "Eagle F1 Asymmetric SUV": keep the longest.
-        named = [key for key in named if not any(key != other and f" {key} " in f" {other} " for other in named)]
-        skus = {sku for sku in SKU.findall(line) if sku in by_sku}
-        for key in named:
-            candidates = tuple(p["sku"] for p in _narrow(by_line[key], line))
-            if not skus.intersection(candidates):
-                found.append(Mention(index, candidates, unavailable))
-        found += [Mention(index, (sku,), unavailable) for sku in sorted(skus)]
+    index = -1
+    for block in paragraphs(answer):
+        stock_column = None
+        under_unavailable_heading = False  # "**Out of stock:**" covers the lines under it in its paragraph
+        for line in block:
+            index += 1
+            text = f" {words(line)} "
+            says_unavailable = any(phrase in plain(line) for phrase in UNAVAILABLE)
+            unavailable = says_unavailable or under_unavailable_heading
+            cells = _cells(line)
+            if cells is None:
+                stock_column = None
+            elif header := [i for i, cell in enumerate(cells) if STOCK_HEADER.search(plain(cell))]:
+                stock_column = header[0]
+            elif stock_column is not None and stock_column < len(cells):
+                unavailable = unavailable or bool(NO_STOCK_CELL.search(plain(cells[stock_column])))
+            named = [key for key in by_line if f" {key} " in text]
+            # "Eagle F1 Asymmetric SUV-4X4" also contains the line "Eagle F1 Asymmetric SUV": keep the longest.
+            named = [key for key in named if not any(key != other and f" {key} " in f" {other} " for other in named)]
+            skus = {sku for sku in SKU.findall(line) if sku in by_sku}
+            for key in named:
+                candidates = tuple(p["sku"] for p in _narrow(by_line[key], line))
+                if not skus.intersection(candidates):
+                    found.append(Mention(index, candidates, unavailable))
+            found += [Mention(index, (sku,), unavailable) for sku in sorted(skus)]
+            if says_unavailable and not named and not skus and plain(line).endswith(":"):
+                under_unavailable_heading = True
     return found
 
 
@@ -191,6 +201,8 @@ def check_facts(answer: str, seen: list[dict], shopper_numbers: set[float]) -> l
             index += 1
 
             for match in PRICE.finditer(line):
+                if BOUND.search(plain(line[: match.start()])):
+                    continue
                 value, has_cents = float(match.group(1).replace(",", "") + (match.group(2) or "")), bool(match.group(2))
                 # A line that names the product must quote its price; a line under it may summarize others.
                 candidates = [owner] if owner and names_one else seen

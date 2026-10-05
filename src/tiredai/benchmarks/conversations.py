@@ -34,7 +34,7 @@ from langchain_core.messages import AIMessage
 from langfuse import Evaluation
 
 from tiredai.agent import astream_turn, thread_config
-from tiredai.benchmarks.answers import check_facts, has_phrase, meets, mentions, numbers, words
+from tiredai.benchmarks.answers import check_facts, contains_words, has_phrase, meets, mentions, numbers, words
 from tiredai.benchmarks.cases import Expect
 from tiredai.benchmarks.catalog import Catalog
 from tiredai.benchmarks.experiments import item_value
@@ -273,7 +273,10 @@ def score_turn(catalog: Catalog, expect: Expect, turn: dict, context: Context) -
     if expect.not_in_catalog:
         checks.append((any(has_phrase(answer, p) for p in NOT_IN_CATALOG), "says the product isn't in the catalog"))
     if expect.product_sku:
-        checks.append((any(expect.product_sku in m.skus for m in named), "names the requested product"))
+        # By its catalog name, or the way the shopper named it: their product terms and its size.
+        product = catalog[expect.product_sku]
+        as_asked = all(words(t) in words(answer) for t in expect.product_terms) and contains_words(answer, product.get("size") or "")
+        checks.append((as_asked or any(expect.product_sku in m.skus for m in named), "names the requested product"))
     if nothing_cheaper:
         checks.append((any(has_phrase(answer, p) for p in NOTHING_CHEAPER), f"says nothing below ${below:.2f} meets the constraints"))
     if checks:

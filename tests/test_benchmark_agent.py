@@ -349,3 +349,11 @@ def test_retries_stop_after_the_last_wait(settings):
     output, waits = run_flaky(settings, FlakyModel(messages=iter([]), failures=10))
 
     assert output["attempts"] == 3 and waits == [20, 60] and "overloaded" in output["turns"][0]["error"]
+
+
+def test_the_requested_product_may_be_named_as_the_shopper_named_it():
+    expect = {"intent": "product_inquiry", "product_sku": "NEXEN", "product_terms": ["classe premiere"]}
+    found = search(["NEXEN"], query="Nexen Classe Premiere CP672")
+
+    assert scores(expect, turn("The Classe Premiere 205/55R16 costs $84.64.", found))["answer_checks"] == 1
+    assert scores(expect, turn("The Classe Premiere costs $84.64.", found))["answer_checks"] == 0  # which size?

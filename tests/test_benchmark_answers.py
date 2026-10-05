@@ -162,3 +162,22 @@ def test_a_saving_between_two_shown_prices_is_supported_to_the_cent():
         ("price", "$84.64", True), ("price", "$40.35", True),  # 124.99 - 84.64
     ]  # fmt: skip
     assert facts("Nexen Classe Premiere CP672: about $40 less") == [("price", "$40", False)]  # a round amount could be anything
+
+
+def test_a_heading_saying_out_of_stock_covers_the_list_under_it():
+    answer = """In stock: Nexen Classe Premiere CP672 ($84.64).
+
+**Out of stock** (still in the catalog):
+- Kelly Edge Touring Plus ($95.68)
+- General Altimax RT45 205/60R15
+
+Want a budget?"""
+
+    assert [(m.skus, m.unavailable) for m in mentions(answer, SEEN)] == [
+        (("NEXEN",), False), (("KELLY",), True), (("GEN-15",), True)
+    ]  # fmt: skip
+
+
+def test_a_price_bound_is_not_a_product_fact():
+    assert facts("The three in-stock options under $90: Nexen Classe Premiere CP672 at $84.64.") == [("price", "$84.64", True)]
+    assert facts("Nexen Classe Premiere CP672, just $90.") == [("price", "$90", False)]
