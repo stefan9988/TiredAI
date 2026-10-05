@@ -108,14 +108,34 @@ The agent has one tool, `search_tires`, and a system prompt that defines the thr
 
 ## Getting started
 
-### Requirements
+### With Docker
+
+You need Docker with Compose, an [OpenRouter](https://openrouter.ai) API key (free), and the tire catalog CSV.
+
+```bash
+cp .env.example .env     # set OPENROUTER_API_KEY, and API_PORT to use another port than 8000
+docker compose up --build
+```
+
+Then copy `tires_sample_10k_sku.csv` into the `data` folder, before or after starting. The container waits for the file, builds the index, and starts the server. When the log says `Application startup complete`, open http://localhost:8000 (or the `API_PORT` you set).
+
+- **First start:** downloads the embedding models and indexes all products, which takes a few minutes with the default local embeddings.
+- **Later starts:** reuse the index and are up in seconds. The index is rebuilt automatically when the CSV or the embedding settings change.
+- **Storage:** the index, the chat history and the downloaded models are kept in `data/` and `.cache/` on your machine, owned by your user, so they survive `docker compose down`.
+- **Access:** the server is reachable from this machine only.
+
+Use `docker compose up -d` to run it in the background, `docker compose logs -f` to follow the progress, and `docker compose down` to stop it. Docker and the local setup below share the same folders, so run only one of them at a time.
+
+### Without Docker
+
+#### Requirements
 
 - Python 3.12 and [uv](https://docs.astral.sh/uv/)
 - An [OpenRouter](https://openrouter.ai) API key (free)
 - The tire catalog CSV
 - Optional: Node.js, to run the chat page's JavaScript tests
 
-### Setup
+#### Setup
 
 ```bash
 uv sync
@@ -124,7 +144,7 @@ mkdir -p data && cp /path/to/tires_sample_10k_sku.csv data/
 uv run python scripts/build_index.py
 ```
 
-`build_index.py` preprocesses the CSV into `data/processed/tires.parquet`, embeds every product, loads it into Qdrant (`data/vectorstore/`), and checks every stored payload. With the default local embeddings, the models are downloaded on the first run. Use `--skip-preprocess` to reuse the existing Parquet file.
+`build_index.py` preprocesses the CSV into `data/processed/tires.parquet`, embeds every product, loads it into Qdrant (`data/vectorstore/`), and checks every stored payload. With the default local embeddings, the models are downloaded on the first run. Use `--skip-preprocess` to reuse the existing Parquet file, or `--if-changed` to rebuild only when the data or embedding settings changed since the last build.
 
 To inspect the data first:
 
@@ -133,7 +153,7 @@ uv run python scripts/analyze_dataset.py       # data-quality report for the raw
 uv run python scripts/preprocess_dataset.py    # normalization summary and generated-column shares
 ```
 
-### Run
+#### Run
 
 ```bash
 uv run python scripts/serve.py                 # chat UI at http://localhost:8000
@@ -157,7 +177,7 @@ All settings live in `.env`; `.env.example` lists every option with comments. Th
 | `AGENT_HISTORY_MESSAGES` | `10` | Chat messages the model sees |
 | `AGENT_MAX_TOOL_CALLS` | `5` | Searches per shopper message |
 | `AGENT_MAX_SEARCH_RESULTS` | `20` | Products returned by each search |
-| `API_HOST` / `API_PORT` | `127.0.0.1` / `8000` | Server address |
+| `API_HOST` / `API_PORT` | `127.0.0.1` / `8000` | Server address; with Docker, `API_PORT` is the port opened on your machine |
 | `SYSTEM_PROMPT_PATH` | `prompts/system.md` | The system prompt |
 
 ## API
@@ -184,9 +204,10 @@ The tests run offline: scripted chat models, a deterministic fake embedder and a
 
 ```
 prompts/system.md         system prompt
-scripts/                  analyze_dataset, preprocess_dataset, build_index, chat, serve
-src/tiredai/              preprocessing, documents, embeddings, vectorstore, search, agent, api, conversations, config
+scripts/                  analyze_dataset, preprocess_dataset, build_index, chat, serve, start (Docker entrypoint)
+src/tiredai/              preprocessing, documents, embeddings, vectorstore, search, agent, api, conversations, config, startup
 src/tiredai/static/       chat UI (index.html, app.js, lib.mjs, style.css)
 tests/                    pytest suite; tests/ui/ holds the JavaScript tests
 data/                     raw CSV, processed Parquet, vector store and conversation history (not in git)
+Dockerfile, docker-compose.yml
 ```

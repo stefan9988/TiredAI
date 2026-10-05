@@ -1,6 +1,10 @@
 """Qdrant collection holding one point per product, with a dense vector and a BM25 sparse vector."""
 
+import hashlib
+import json
 from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Protocol
 
 from qdrant_client import QdrantClient, models
@@ -98,3 +102,39 @@ def verify_index(client: QdrantClient, collection: str, products: list[dict]) ->
     if len(stored) != len(products):
         problems.append(f"collection has {len(stored):,} points, expected {len(products):,}")
     return problems
+
+
+def index_fingerprint(products: list[dict], settings: Settings) -> str:
+    """Changes whenever a rebuild would give a different index: other products or embedded texts, or other models."""
+    digest = hashlib.sha256()
+    models_used = [settings.embedding_provider, settings.embedding_model, settings.sparse_model, settings.qdrant_collection]
+    digest.update(json.dumps(models_used).encode())
+    for product in products:
+        digest.update(json.dumps(product, sort_keys=True, default=str).encode())
+        digest.update(document_text(product).encode())
+    return digest.hexdigest()
+
+
+def index_state_path(settings: Settings) -> Path:
+    """Where build_index.py records what the index was built from."""
+    return settings.processed_data_path.with_name("index-state.json")
+
+
+def save_index_state(path: Path, fingerprint: str, points: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    state = {"fingerprint": fingerprint, "points": points, "built_at": datetime.now(UTC).isoformat()}
+    path.write_text(json.dumps(state, indent=2) + "\n")
+
+
+def index_is_current(client: QdrantClient, collection: str, state_path: Path, fingerprint: str, points: int) -> bool:
+    """True when the last build recorded this fingerprint and the collection still holds all its points."""
+    try:
+        state = json.loads(state_path.read_text())
+    except (OSError, ValueError):
+        return False
+    return (
+        state.get("fingerprint") == fingerprint
+        and state.get("points") == points
+        and client.collection_exists(collection)
+        and client.count(collection, exact=True).count == points
+    )

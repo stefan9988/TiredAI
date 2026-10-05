@@ -1,0 +1,19 @@
+# Copy .env.example to .env and set OPENROUTER_API_KEY (and API_PORT for another port), then:
+#   docker compose up --build
+# and copy the catalog CSV into ./data. The first start builds the index; later starts reuse it.
+services:
+  tiredai:
+    build: .
+    image: tiredai
+    init: true  # passes the stop signal on while start.py waits or builds the index
+    env_file: .env
+    environment:
+      # Inside the container the server always listens on 8000; API_PORT is the port on this machine.
+      API_HOST: 0.0.0.0
+      API_PORT: "8000"
+      PUBLIC_PORT: ${API_PORT:-8000}
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"  # a local demo without auth: reachable from this machine only
+    volumes:
+      - ./data:/app/data      # the catalog CSV goes here; the index and chat history are kept here too
+      - ./.cache:/app/.cache  # downloaded models and cached embeddings

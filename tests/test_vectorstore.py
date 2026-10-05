@@ -1,10 +1,22 @@
+import dataclasses
+
 import pytest
 from conftest import FakeEncoder, raw_frame
 from qdrant_client import QdrantClient, models
 
+from tiredai.config import Settings
 from tiredai.documents import point_id, products
 from tiredai.preprocessing import normalize
-from tiredai.vectorstore import DENSE, DOCUMENT_KEY, SPARSE, index_products, verify_index
+from tiredai.vectorstore import (
+    DENSE,
+    DOCUMENT_KEY,
+    SPARSE,
+    index_fingerprint,
+    index_is_current,
+    index_products,
+    save_index_state,
+    verify_index,
+)
 
 COLLECTION = "tires"
 
@@ -148,3 +160,35 @@ def test_index_persists_on_disk(tmp_path):
     reopened = QdrantClient(path=str(tmp_path))
     assert reopened.count(COLLECTION).count == len(CATALOG)
     reopened.close()
+
+
+def test_fingerprint_changes_with_the_products_or_the_embedding_models():
+    settings = Settings.load()
+    changed_price = [{**CATALOG[0], "price": 61.0}, *CATALOG[1:]]
+    other_model = dataclasses.replace(settings, embedding_model="another/model")
+
+    assert index_fingerprint(CATALOG, settings) == index_fingerprint([dict(p) for p in CATALOG], settings)
+    assert index_fingerprint(changed_price, settings) != index_fingerprint(CATALOG, settings)
+    assert index_fingerprint(CATALOG[:2], settings) != index_fingerprint(CATALOG, settings)
+    assert index_fingerprint(CATALOG, other_model) != index_fingerprint(CATALOG, settings)
+
+
+def test_index_is_current_only_after_a_recorded_build_of_the_same_data(client, tmp_path):
+    state = tmp_path / "processed" / "index-state.json"
+
+    assert not index_is_current(client, COLLECTION, state, "abc", len(CATALOG))  # nothing recorded yet
+    save_index_state(state, "abc", len(CATALOG))
+    assert index_is_current(client, COLLECTION, state, "abc", len(CATALOG))
+    assert not index_is_current(client, COLLECTION, state, "other", len(CATALOG))  # the data changed
+
+    client.delete(COLLECTION, points_selector=models.PointIdsList(points=[point_id("CHEAP")]))
+    assert not index_is_current(client, COLLECTION, state, "abc", len(CATALOG))  # a build was cut short
+    client.delete_collection(COLLECTION)
+    assert not index_is_current(client, COLLECTION, state, "abc", len(CATALOG))  # the store was deleted
+
+
+def test_an_unreadable_state_means_rebuild(client, tmp_path):
+    state = tmp_path / "index-state.json"
+    state.write_text("not json")
+
+    assert not index_is_current(client, COLLECTION, state, "abc", len(CATALOG))

@@ -1,4 +1,6 @@
-data/
+# The data folder is kept (Docker mounts it) but its contents are local.
+data/*
+!data/.gitkeep
 PROJECT_REQUIREMENTS.md
 CLAUDE.md
 
