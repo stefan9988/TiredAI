@@ -431,7 +431,7 @@ test("an answer from the guardrail says why, with the scores on hover", () => {
 });
 
 test("guardrail notes escape what they show and name every reason", () => {
-  assert.match(renderGuardrailNote({ reason: "manipulation", threshold: 0.7 }), /tries to change the rules/);
+  assert.match(renderGuardrailNote({ reason: "manipulation", threshold: 0.7 }), /Blocked by the guardrail: prompt injection/);
   assert.match(renderGuardrailNote({ reason: "harmful", threshold: 0.7 }), /harmful request/);
   const odd = renderGuardrailNote({ reason: "<b>new</b>", block_score: null, model: '"><script>' });
   assert.ok(!odd.includes("<b>") && !odd.includes("<script>"));

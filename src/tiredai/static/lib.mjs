@@ -228,7 +228,7 @@ export function renderToolCalls(calls) {
 }
 
 // Why the guardrail answered instead of the chat model, by the reason the API gives.
-const GUARDRAIL_REASONS = { off_topic: "off-topic", manipulation: "tries to change the rules", harmful: "harmful request" };
+const GUARDRAIL_REASONS = { off_topic: "off-topic", manipulation: "prompt injection", harmful: "harmful request" };
 
 const SHIELD_ICON =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 3 8.3 7 9.5 4-1.2 7-5.1 7-9.5V6l-7-3Z" ' +
