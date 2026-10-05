@@ -1,4 +1,5 @@
-"""Ranking metrics. `relevant` is a ranking as booleans, `gains` as graded relevance from 0 to 1."""
+"""Ranking metrics (`relevant` is a ranking as booleans, `gains` as graded relevance from 0 to 1), and the
+classification metrics of the guardrail benchmark."""
 
 import math
 import statistics
@@ -28,6 +29,26 @@ def ndcg_at(gains: list[float], best_gains: Iterable[float], k: int) -> float:
     """DCG of the top k over the best possible DCG, from the gains of every product that could be returned."""
     best = dcg(sorted(best_gains, reverse=True), k)
     return dcg(gains, k) / best if best else 0.0
+
+
+def balanced_accuracy(decisions: Iterable[tuple[bool, bool]]) -> float | None:
+    """The mean of the share of positives called positive and the share of negatives called negative, from
+    (predicted, actual) pairs; None unless both classes are present."""
+    pairs = list(decisions)
+    positives = [predicted for predicted, actual in pairs if actual]
+    negatives = [not predicted for predicted, actual in pairs if not actual]
+    if not positives or not negatives:
+        return None
+    return (sum(positives) / len(positives) + sum(negatives) / len(negatives)) / 2
+
+
+def roc_auc(positive_scores: list[float], negative_scores: list[float]) -> float | None:
+    """The chance that a positive scores higher than a negative (ties count half), at any threshold; None
+    unless both are given."""
+    if not positive_scores or not negative_scores:
+        return None
+    wins = sum((p > n) + 0.5 * (p == n) for p in positive_scores for n in negative_scores)
+    return wins / (len(positive_scores) * len(negative_scores))
 
 
 def mean(values: Iterable[float | None]) -> float | None:

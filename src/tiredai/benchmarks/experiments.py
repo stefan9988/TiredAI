@@ -205,8 +205,9 @@ def markdown_table(summaries: list[RunSummary], score_order: list[str]) -> str:
 
 
 def write_report(kind: str, title: str, summaries: list[RunSummary], score_order: list[str], notes: list[str],
-                 directory: Path = RESULTS_DIR) -> tuple[Path, Path]:  # fmt: skip
-    """benchmarks/results/<time>-<kind>.md (the summary) and .json (every case with its output and scores)."""
+                 directory: Path = RESULTS_DIR, sections: list[str] = ()) -> tuple[Path, Path]:  # fmt: skip
+    """benchmarks/results/<time>-<kind>.md (the summary, then any `sections` of Markdown) and .json (every case
+    with its output and scores)."""
     directory.mkdir(parents=True, exist_ok=True)
     stem = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + f"-{kind}"
     links = [f"- {s.label}: {s.url}" for s in summaries if s.url]
@@ -216,6 +217,7 @@ def write_report(kind: str, title: str, summaries: list[RunSummary], score_order
             f"# {title}",
             "\n".join(f"- {note}" for note in notes),
             markdown_table(summaries, score_order),
+            *sections,
             "Langfuse runs:\n" + "\n".join(links) if links else "",
         )
         if part
