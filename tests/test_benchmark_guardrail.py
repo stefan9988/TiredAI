@@ -1,11 +1,9 @@
 import asyncio
 import dataclasses
 import json
-from types import SimpleNamespace
 
-import httpx
 import pytest
-from conftest import ToolCallingModel
+from conftest import FakeDecisions, ToolCallingModel, decisions, jev_client
 from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 
@@ -13,27 +11,20 @@ from tiredai import tracing
 from tiredai.agent import build_agent
 from tiredai.benchmarks import experiments as ex
 from tiredai.benchmarks.guardrail import (
-    DECISIONS_URL,
-    QUESTIONS,
     CaseFile,
     GuardCase,
     GuardTask,
-    JevClient,
-    JevError,
     best_threshold,
-    block_score,
     capture_conversation,
     check_cases,
     dataset_cases,
     guard_evaluator,
-    guard_state,
     load_captured,
     load_cases,
     misjudged,
     run_details,
     stale,
     tag_table,
-    trimmed,
     visible_conversation,
     write_captured,
 )
@@ -54,14 +45,7 @@ def answers(in_scope=0.9, manipulation=0.05, harmful=0.05) -> dict:
     return {"in_scope": in_scope, "manipulation": manipulation, "harmful": harmful}
 
 
-# --- Block score and what Jev sees -------------------------------------------------------------------
-
-
-def test_the_block_score_is_the_strongest_reason_to_block():
-    assert block_score(answers()) == pytest.approx(0.1)
-    assert block_score(answers(in_scope=0.2)) == pytest.approx(0.8)
-    assert block_score(answers(manipulation=0.97)) == 0.97
-    assert block_score(answers(harmful=0.6)) == 0.6
+# --- What Jev sees ----------------------------------------------------------------------------------
 
 
 def test_the_message_variant_shows_no_conversation_and_full_shows_all_of_it():
@@ -79,81 +63,6 @@ def test_the_recent_variant_shows_what_the_agent_sees_whole_turns_with_the_messa
 def test_an_unknown_variant_is_an_error():
     with pytest.raises(ValueError, match="Unknown variant"):
         visible_conversation(THREE_TURNS, "hi", "everything", 10)
-
-
-def test_the_oldest_whole_turns_are_dropped_beyond_the_character_budget():
-    conversation = chat("a" * 10, "b" * 10, "c" * 10, "d" * 10)
-
-    assert trimmed(conversation, max_chars=40) == conversation
-    assert trimmed(conversation, max_chars=39) == conversation[2:]
-    assert trimmed(conversation, max_chars=19) == []
-
-
-def test_the_state_holds_the_policy_the_conversation_and_the_latest_message():
-    state = guard_state(chat("tires?", "Which size?"), "205/55R16")
-
-    assert list(state) == ["policy", "conversation", "latest_shopper_message"]
-    assert state["conversation"] == [{"from": "shopper", "text": "tires?"}, {"from": "assistant", "text": "Which size?"}]
-    assert state["latest_shopper_message"] == "205/55R16"
-    assert "conversation" not in guard_state([], "hi")
-
-
-# --- Jev ---------------------------------------------------------------------------------------------
-
-
-def decisions(**probabilities) -> dict:
-    return {"model": "typesafe/jev-1.13-20260917", "answers": {name: {"type": "noul", "noul": p} for name, p in probabilities.items()},
-            "usage": {"input_tokens": 600, "output_tokens": 30, "cost": 0.0000252}}  # fmt: skip
-
-
-class FakeDecisions:
-    """The Decisions API: replies in order (a dict is a 200 body, an int an error status), recording each request."""
-
-    def __init__(self, *replies):
-        self.replies = list(replies)
-        self.requests = []
-
-    def __call__(self, request: httpx.Request) -> httpx.Response:
-        self.requests.append(request)
-        reply = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
-        if isinstance(reply, int):
-            return httpx.Response(reply, text="provider says no")
-        return httpx.Response(200, json=reply)
-
-
-def jev(api: FakeDecisions, slept: list | None = None) -> JevClient:
-    return JevClient("test-key", client=httpx.Client(transport=httpx.MockTransport(api)), sleep=(slept if slept is not None else []).append)
-
-
-def test_jev_gets_the_state_and_questions_and_its_probabilities_come_back():
-    api = FakeDecisions(decisions(in_scope=0.98, manipulation=0.01, harmful=0))
-
-    decision = jev(api).decide({"latest_shopper_message": "hi"}, QUESTIONS)
-
-    [request] = api.requests
-    assert str(request.url) == DECISIONS_URL and request.headers["Authorization"] == "Bearer test-key"
-    assert json.loads(request.content) == {"model": "typesafe/jev-1.13", "state": {"latest_shopper_message": "hi"}, "questions": QUESTIONS}
-    assert decision == {"answers": {"in_scope": 0.98, "manipulation": 0.01, "harmful": 0.0}, "model": "typesafe/jev-1.13-20260917",
-                        "usage": {"input_tokens": 600, "output_tokens": 30, "cost": 0.0000252}}  # fmt: skip
-
-
-def test_overloads_and_rate_limits_are_retried_other_errors_are_not():
-    slept = []
-    api = FakeDecisions(503, 429, decisions(in_scope=0.9, manipulation=0, harmful=0))
-
-    assert jev(api, slept).decide({}, QUESTIONS)["answers"]["in_scope"] == 0.9
-    assert slept == [2, 4] and len(api.requests) == 3
-
-    with pytest.raises(JevError, match="400: provider says no"):
-        jev(FakeDecisions(400)).decide({}, QUESTIONS)
-    with pytest.raises(JevError, match="503"):
-        jev(FakeDecisions(503)).decide({}, QUESTIONS)
-
-
-@pytest.mark.parametrize("body", [decisions(in_scope=0.9, manipulation=0), decisions(in_scope=1.2, manipulation=0, harmful=0), {"answers": {}}])
-def test_a_missing_or_impossible_probability_is_an_error_not_an_answer(body):
-    with pytest.raises(JevError, match="no probability"):
-        jev(FakeDecisions(body)).decide({}, QUESTIONS)
 
 
 # --- Cases and captured conversations ----------------------------------------------------------------
@@ -258,7 +167,7 @@ def test_the_task_shows_jev_its_variant_of_the_conversation_and_records_the_deci
     api = FakeDecisions(decisions(in_scope=0.97, manipulation=0.02, harmful=0.01))
     item = {"input": {"conversation": THREE_TURNS, "message": "what about the second one?"}}
 
-    output = asyncio.run(GuardTask(jev(api), "recent", history_messages=4)(item=item))
+    output = asyncio.run(GuardTask(jev_client(api), "recent", history_messages=4)(item=item))
 
     state = json.loads(api.requests[0].content)["state"]
     assert state["conversation"] == [{"from": "shopper", "text": "do you ship to Canada?"}, {"from": "assistant", "text": "Yes, we do."}]
@@ -285,7 +194,7 @@ def test_the_experiment_runs_locally_with_one_trace_per_case():
     api = FakeDecisions(decisions(in_scope=0.1, manipulation=0.02, harmful=0.01))
     data = ex.local_items(dataset_cases(case_file(), CAPTURED))
 
-    result = tracing.client().run_experiment(name="test", data=data, task=GuardTask(jev(api), "full", 10), evaluators=[guard_evaluator(0.5)])
+    result = tracing.client().run_experiment(name="test", data=data, task=GuardTask(jev_client(api), "full", 10), evaluators=[guard_evaluator(0.5)])
 
     summary = ex.summarize("jev · full", result, items=2, details=run_details(result))
     assert summary.failed == 0 and summary.scores == {"correct": 0.5, "false_block": 1.0, "caught": 1.0}
@@ -296,7 +205,7 @@ def test_the_check_is_a_guardrail_observation_inside_the_experiment_item(traces)
     api = FakeDecisions(decisions(in_scope=0.95, manipulation=0.01, harmful=0.01))
     data = ex.local_items(dataset_cases(case_file(), CAPTURED))[:1]
 
-    traces.client.run_experiment(name="Guardrail: test", data=data, task=GuardTask(jev(api), "full", 10), evaluators=[guard_evaluator(0.5)])
+    traces.client.run_experiment(name="Guardrail: test", data=data, task=GuardTask(jev_client(api), "full", 10), evaluators=[guard_evaluator(0.5)])
 
     [check] = traces.named("check-message")
     assert check.attributes["langfuse.observation.type"] == "guardrail"

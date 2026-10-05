@@ -15,6 +15,7 @@ import {
   parseSSE,
   productColumns,
   renderBenchmarks,
+  renderGuardrailNote,
   renderMarkdown,
   renderToolCalls,
   sortRows,
@@ -410,4 +411,29 @@ test("sortable headers say how their table is sorted", () => {
   assert.ok(html.includes('data-sort-key="seconds_per_turn" data-sort-first="asc"'));
   assert.ok(html.includes('aria-sort="none"><button type="button" data-sort-kind="agent" data-sort-key="model" data-sort-first="asc">Chat model'));
   assert.ok(html.includes("<th>Langfuse</th>")); // links don't sort
+});
+
+test("an answer from the guardrail says why, with the scores on hover", () => {
+  const note = renderGuardrailNote({
+    blocked: true,
+    reason: "off_topic",
+    block_score: 0.96,
+    threshold: 0.7,
+    probabilities: { in_scope: 0.04, manipulation: 0.02, harmful: 0.01 },
+    model: "typesafe/jev-1.13-20260917",
+  });
+
+  assert.match(note, /<span>Answered by the guardrail: off-topic<\/span>/);
+  assert.match(
+    note,
+    /title="Block score 0\.96 \(blocks at 0\.70\) · in scope 0\.04 · manipulation 0\.02 · harmful 0\.01 · typesafe\/jev-1\.13-20260917"/,
+  );
+});
+
+test("guardrail notes escape what they show and name every reason", () => {
+  assert.match(renderGuardrailNote({ reason: "manipulation", threshold: 0.7 }), /tries to change the rules/);
+  assert.match(renderGuardrailNote({ reason: "harmful", threshold: 0.7 }), /harmful request/);
+  const odd = renderGuardrailNote({ reason: "<b>new</b>", block_score: null, model: '"><script>' });
+  assert.ok(!odd.includes("<b>") && !odd.includes("<script>"));
+  assert.match(odd, /Block score \? /);
 });

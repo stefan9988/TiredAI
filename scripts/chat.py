@@ -1,10 +1,11 @@
 """Chat with the tire assistant in the terminal; answers are streamed as they are generated.
 
 The conversation is remembered until you exit. Type /new to start a new conversation, or press
-Ctrl+D (or type /exit) to quit. Pass a message as an argument to ask a single question.
+Ctrl+D (or type /exit) to quit. Pass a message as an argument to ask a single question. The guardrail
+checks every message first, like on the chat page; --no-guardrail sends them straight to the chat model.
 
 Usage:
-    uv run python scripts/chat.py ["What does UTQG mean?"]
+    uv run python scripts/chat.py [--no-guardrail] ["What does UTQG mean?"]
 """
 
 import argparse
@@ -12,17 +13,17 @@ import sys
 import uuid
 
 from tiredai import tracing
-from tiredai.agent import build_agent, stream_reply, trace_metadata
+from tiredai.agent import build_agent, has_guardrail, stream_reply, trace_metadata
 from tiredai.config import Settings
 from tiredai.embeddings import build_encoder
 from tiredai.search import catalog_tools
 from tiredai.vectorstore import connect
 
 
-def ask(agent, message: str, thread_id: str, metadata: dict) -> None:
+def ask(agent, message: str, thread_id: str, metadata: dict, guardrail: bool) -> None:
     print("assistant> ", end="", flush=True)
     try:
-        for text in stream_reply(agent, message, thread_id, source="cli", metadata=metadata):
+        for text in stream_reply(agent, message, thread_id, source="cli", metadata=metadata, guardrail=guardrail):
             print(text, end="", flush=True)
     except Exception as exc:  # show provider errors (rate limits, auth) without a traceback
         print(f"\n[error] {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -32,6 +33,7 @@ def ask(agent, message: str, thread_id: str, metadata: dict) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("message", nargs="?", help="ask one question and exit")
+    parser.add_argument("--no-guardrail", action="store_true", help="don't check messages with the guardrail")
     args = parser.parse_args()
 
     settings = Settings.load()
@@ -55,18 +57,19 @@ def main() -> None:
 
     tracing.start()
     try:
-        converse(agent, args.message, trace_metadata(settings), settings.llm.model)
+        guardrail = not args.no_guardrail and has_guardrail(agent)
+        converse(agent, args.message, trace_metadata(settings), settings.llm.model, guardrail)
     finally:
         tracing.flush()
 
 
-def converse(agent, message: str | None, metadata: dict, model: str) -> None:
+def converse(agent, message: str | None, metadata: dict, model: str, guardrail: bool = False) -> None:
     thread_id = str(uuid.uuid4())
     if message:
-        ask(agent, message, thread_id, metadata)
+        ask(agent, message, thread_id, metadata, guardrail)
         return
 
-    print(f"TiredAI ({model}). /new starts a new conversation, Ctrl+D quits.")
+    print(f"TiredAI ({model}, guardrail {'on' if guardrail else 'off'}). /new starts a new conversation, Ctrl+D quits.")
     while True:
         try:
             message = input("\nyou> ").strip()
@@ -79,7 +82,7 @@ def converse(agent, message: str | None, metadata: dict, model: str) -> None:
             thread_id = str(uuid.uuid4())
             print("Started a new conversation.")
         elif message:
-            ask(agent, message, thread_id, metadata)
+            ask(agent, message, thread_id, metadata, guardrail)
 
 
 if __name__ == "__main__":

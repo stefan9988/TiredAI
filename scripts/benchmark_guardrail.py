@@ -1,5 +1,8 @@
 """Guardrail benchmark: how well Jev tells the shopper messages the agent should handle from the ones to stop.
 
+It measures the guardrail the app runs (src/tiredai/guardrail.py: the same policy, questions and block
+score), with GUARDRAIL_MODEL and GUARDRAIL_THRESHOLD from .env unless --model and --threshold say otherwise.
+
 Every case of benchmarks/guardrail_cases.yaml (a message, optionally after a captured conversation from
 benchmarks/guardrail_conversations.yaml) is sent to Jev's Decisions API with the policy and three yes/no
 questions, once per variant of how much conversation Jev sees: message (none), recent (the agent's
@@ -23,12 +26,10 @@ from tiredai import tracing
 from tiredai.benchmarks import experiments as ex
 from tiredai.benchmarks.guardrail import (
     DATASET,
-    DEFAULT_MODEL,
     SCORES,
     SETUP_VERSION,
     VARIANTS,
     GuardTask,
-    JevClient,
     check_cases,
     dataset_cases,
     guard_evaluator,
@@ -39,13 +40,17 @@ from tiredai.benchmarks.guardrail import (
     tag_table,
 )
 from tiredai.config import Settings
+from tiredai.guardrail import JevClient
 
 
 def main() -> None:
+    settings = Settings.load()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model", action="append", metavar="MODEL", help=f"Decisions model; repeat to compare (default: {DEFAULT_MODEL})")
+    parser.add_argument("--model", action="append", metavar="MODEL",
+                        help=f"Decisions model; repeat to compare (default: GUARDRAIL_MODEL, {settings.guardrail.model})")
     parser.add_argument("--variant", action="append", choices=VARIANTS, help="default: all three")
-    parser.add_argument("--threshold", type=float, default=0.5, help="block at this block score or above (default: 0.5)")
+    parser.add_argument("--threshold", type=float, default=settings.guardrail.threshold,
+                        help=f"block at this block score or above (default: GUARDRAIL_THRESHOLD, {settings.guardrail.threshold})")
     parser.add_argument("--case", action="append", metavar="ID", help="run only these cases")
     parser.add_argument("--concurrency", type=int, default=8, help="requests at once (default: 8)")
     parser.add_argument("--local", action="store_true", help="send nothing to Langfuse, even with keys set")
@@ -56,7 +61,6 @@ def main() -> None:
         os.environ.update(LANGFUSE_PUBLIC_KEY="", LANGFUSE_SECRET_KEY="")  # .env doesn't override set variables
     if not 0 < args.threshold <= 1:
         sys.exit("--threshold must be above 0 and at most 1")
-    settings = Settings.load()
 
     cases = load_cases(ex.BENCHMARKS_DIR / "guardrail_cases.yaml")
     captured = load_captured(ex.BENCHMARKS_DIR / "guardrail_conversations.yaml")
@@ -90,7 +94,7 @@ def main() -> None:
     stamp, revision = ex.timestamp(), ex.git_revision()
     history = settings.agent.history_messages
     summaries = []
-    for model in args.model or [DEFAULT_MODEL]:
+    for model in args.model or [settings.guardrail.model]:
         jev = JevClient(settings.openrouter_api_key, model)
         for variant in args.variant or VARIANTS:
             label = f"{model} · {variant}"

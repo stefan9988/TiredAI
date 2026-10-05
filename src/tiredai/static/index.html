@@ -45,7 +45,14 @@
           <textarea id="input" rows="1" maxlength="4000" placeholder="Ask about tires…" aria-label="Message"></textarea>
           <button id="send" type="submit">Send</button>
         </form>
-        <p class="hint">Enter to send, Shift+Enter for a new line.</p>
+        <div class="composer-options">
+          <label class="toggle" title="Checks each message before the chat model sees it">
+            <input id="guardrail" type="checkbox" role="switch" checked />
+            <span class="switch" aria-hidden="true"></span>
+            <span>Guardrail</span>
+          </label>
+          <p class="hint">Enter to send, Shift+Enter for a new line.</p>
+        </div>
       </footer>
     </div>
 

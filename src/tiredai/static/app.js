@@ -9,6 +9,7 @@ import {
   nextSort,
   parseSSE,
   renderBenchmarks,
+  renderGuardrailNote,
   renderMarkdown,
   renderToolCalls,
 } from "./lib.mjs";
@@ -28,6 +29,7 @@ const detailsClose = document.querySelector("#details-close");
 const benchmarksLink = document.querySelector("#benchmarks");
 const benchmarksView = document.querySelector("#benchmarks-view");
 const bottom = document.querySelector("#bottom");
+const guardrail = document.querySelector("#guardrail");
 
 // The open chat, also kept in the URL. null for a new chat until its first reply starts.
 let conversationId = null;
@@ -45,10 +47,26 @@ let benchmarksRequest = 0;
 // The results shown, and how each table is sorted ({agent: {key, direction}, ...}), kept while the page is open.
 let benchmarks = null;
 const benchmarkSort = {};
+// The guardrail switch is on unless this browser turned it off; every message sends its state.
+const GUARDRAIL_KEY = "tiredai.guardrail";
 
 const SEARCH_ICON =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5" fill="none" stroke="currentColor" stroke-width="2.2"/>' +
   '<path d="m15.5 15.5 5 5" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>';
+
+try {
+  guardrail.checked = localStorage.getItem(GUARDRAIL_KEY) !== "off";
+} catch {
+  // No storage (private window, blocked site data): the switch starts on.
+}
+
+guardrail.addEventListener("change", () => {
+  try {
+    localStorage.setItem(GUARDRAIL_KEY, guardrail.checked ? "on" : "off");
+  } catch {
+    // The choice still holds until the page is reloaded.
+  }
+});
 
 function setBusy(value) {
   busy = value;
@@ -65,6 +83,15 @@ fetch("/health")
       h.vector_store.status === "ok" ? `${h.vector_store.points.toLocaleString()} tires` : "catalog unavailable";
     meta.textContent = `${h.model} · ${catalog}`;
     meta.classList.toggle("warn", h.vector_store.status !== "ok");
+    const toggle = guardrail.closest(".toggle");
+    if (h.guardrail.available) {
+      toggle.title =
+        `${h.guardrail.model} checks each message before the chat model sees it, and answers the off-topic ` +
+        `and adversarial ones itself (block score ${h.guardrail.threshold} or more). Off: messages go straight to the chat model.`;
+    } else {
+      guardrail.disabled = true;
+      toggle.title = "The guardrail is unavailable: it needs OPENROUTER_API_KEY.";
+    }
   })
   .catch(() => {
     meta.textContent = "API unreachable";
@@ -87,10 +114,11 @@ function addUserMessage(text) {
   scrollDown(true);
 }
 
-function addSavedAnswer(text, toolCalls) {
+function addSavedAnswer(text, toolCalls, decision) {
   const el = document.createElement("article");
   el.className = "message assistant";
   el.innerHTML = `<div class="answer">${renderMarkdown(text)}</div>`;
+  if (decision) el.insertAdjacentHTML("beforeend", renderGuardrailNote(decision));
   messages.append(el);
   for (const call of toolCalls) addSearch(el, call);
 }
@@ -181,6 +209,10 @@ function addAssistantMessage() {
     },
     toolCall(data) {
       addSearch(el, data);
+      scrollDown();
+    },
+    guardrail(decision) {
+      el.insertAdjacentHTML("beforeend", renderGuardrailNote(decision));
       scrollDown();
     },
     token(chunk) {
@@ -286,7 +318,7 @@ async function openChat(id) {
     }
     for (const message of await response.json()) {
       if (message.role === "user") addUserMessage(message.content);
-      else addSavedAnswer(message.content, message.tool_calls ?? []);
+      else addSavedAnswer(message.content, message.tool_calls ?? [], message.guardrail);
     }
     scrollDown(true);
   } catch (err) {
@@ -311,7 +343,11 @@ async function sendMessage(text) {
     const response = await fetch("/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, conversation_id: conversationId ?? undefined }),
+      body: JSON.stringify({
+        message: text,
+        conversation_id: conversationId ?? undefined,
+        guardrail: guardrail.checked && !guardrail.disabled,
+      }),
     });
     if (!response.ok) {
       throw new Error(errorMessage(await response.json().catch(() => null), response.status));
@@ -336,6 +372,7 @@ async function sendMessage(text) {
         }
         else if (event === "status") reply.status(data);
         else if (event === "tool_call") reply.toolCall(data);
+        else if (event === "guardrail") reply.guardrail(data);
         else if (event === "token") reply.token(data.text);
         else if (event === "error") reply.fail(data.message);
       }

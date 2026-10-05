@@ -112,6 +112,39 @@ class AgentSettings:
         )
 
 
+def _share(raw: str) -> float:
+    value = float(raw)
+    if not 0 < value <= 1:
+        raise ValueError(raw)
+    return value
+
+
+def _positive_number(raw: str) -> float:
+    value = float(raw)
+    if value <= 0:
+        raise ValueError(raw)
+    return value
+
+
+@dataclass(frozen=True)
+class GuardrailSettings:
+    """The guardrail in front of the agent (see guardrail.py); each chat request turns it on or off."""
+
+    model: str  # an OpenRouter Decisions model
+    threshold: float  # messages with a block score at or above this get the guardrail's reply
+    timeout_seconds: float  # a slower answer lets the message through
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> "GuardrailSettings":
+        threshold = _parsed(env, "GUARDRAIL_THRESHOLD", _share, "number above 0 and at most 1")
+        timeout = _parsed(env, "GUARDRAIL_TIMEOUT_SECONDS", _positive_number, "positive number")
+        return cls(
+            model=env.get("GUARDRAIL_MODEL") or "typesafe/jev-1.13",
+            threshold=0.7 if threshold is None else threshold,
+            timeout_seconds=3.0 if timeout is None else timeout,
+        )
+
+
 @dataclass(frozen=True)
 class Settings:
     raw_data_path: Path
@@ -129,6 +162,7 @@ class Settings:
     openrouter_api_key: str | None
     llm: LLMSettings
     agent: AgentSettings
+    guardrail: GuardrailSettings
     conversations_path: Path
     api_host: str
     api_port: int
@@ -152,6 +186,7 @@ class Settings:
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY") or None,
             llm=LLMSettings.from_env(os.environ),
             agent=AgentSettings.from_env(os.environ),
+            guardrail=GuardrailSettings.from_env(os.environ),
             conversations_path=_path("CONVERSATIONS_DB_PATH", "data/conversations.sqlite"),
             api_host=os.getenv("API_HOST") or "127.0.0.1",
             api_port=_parsed(os.environ, "API_PORT", int, "integer") or 8000,

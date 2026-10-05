@@ -34,12 +34,17 @@ _public_key = OFF_KEY  # the key of _client, which the LangChain handler needs t
 
 
 def worth_exporting(span: ReadableSpan) -> bool:
-    """Langfuse's default span filter, without the tool-call limit's bookkeeping when it blocked nothing.
+    """Langfuse's default span filter, without two middleware steps that only repeat what the trace shows.
 
-    That middleware step runs after every model call and only updates counters, unless calls were
-    over the limit: then its output holds the error results, which stay in the trace.
+    The tool-call limit's step runs after every model call and only updates counters, unless calls
+    were over the limit: then its output holds the error results, which stay in the trace. The
+    guardrail's step (agent.GUARDRAIL_NODE) runs at the start of every turn, also with the guardrail
+    off; its check is the check-message observation, and the "agent" in its name would make Langfuse
+    type it as an agent.
     """
     if not is_default_export_span(span):
+        return False
+    if span.name == "Guardrail.before_agent":
         return False
     if span.name.startswith("ToolCallLimitMiddleware"):
         return '"messages"' in str(span.attributes.get(LangfuseOtelSpanAttributes.OBSERVATION_OUTPUT, ""))

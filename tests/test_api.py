@@ -4,7 +4,7 @@ import sqlite3
 import uuid
 
 import pytest
-from conftest import FailingModel, FakeEncoder, ToolCallingModel, fake_model, raw_frame, tool_call, unparsable_call
+from conftest import FailingModel, FakeEncoder, ToolCallingModel, fake_model, raw_frame, sse_events, tool_call, unparsable_call
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -46,16 +46,9 @@ def index_catalog(settings, *rows: dict):
     store.close()
 
 
-def serve(settings, model):
-    return TestClient(create_app(settings, model=model))
-
-
-def sse_events(body: str) -> list[tuple[str, dict]]:
-    events = []
-    for block in body.strip().split("\n\n"):
-        fields = dict(line.split(": ", 1) for line in block.splitlines() if not line.startswith(":"))
-        events.append((fields["event"], json.loads(fields["data"])))
-    return events
+def serve(settings, model, **options):
+    # The fake encoder the tests index with, never the .env embedding model.
+    return TestClient(create_app(settings, model=model, encoder=FakeEncoder(), **options))
 
 
 def test_first_message_starts_a_conversation(settings):
@@ -328,10 +321,10 @@ def test_a_chat_can_be_reopened_after_a_restart(settings):
 
     assert [c["id"] for c in listed] == [conversation_id]
     assert response.json() == [
-        {"role": "user", "content": "I need tires", "tool_calls": []},
-        {"role": "assistant", "content": "Which size?", "tool_calls": []},
-        {"role": "user", "content": "Cheaper please", "tool_calls": []},
-        {"role": "assistant", "content": "Here are cheaper ones.", "tool_calls": []},
+        {"role": "user", "content": "I need tires", "tool_calls": [], "guardrail": None},
+        {"role": "assistant", "content": "Which size?", "tool_calls": [], "guardrail": None},
+        {"role": "user", "content": "Cheaper please", "tool_calls": [], "guardrail": None},
+        {"role": "assistant", "content": "Here are cheaper ones.", "tool_calls": [], "guardrail": None},
     ]
 
 
@@ -354,7 +347,7 @@ def test_reopened_chats_show_the_searches_behind_each_answer(settings):
     with serve(settings, fake_model("unused")) as client:  # after a restart
         question, answer = client.get(f"/conversations/{conversation_id}/messages").json()
 
-    assert question == {"role": "user", "content": "205/55R15 tires?", "tool_calls": []}
+    assert question == {"role": "user", "content": "205/55R15 tires?", "tool_calls": [], "guardrail": None}
     assert answer["content"] == "Found one."
     [streamed] = [data for name, data in events if name == "tool_call"]
     assert answer["tool_calls"] == [streamed]

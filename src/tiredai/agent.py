@@ -1,9 +1,11 @@
 """The shopping assistant: a LangChain agent on an OpenRouter chat model, with per-thread memory."""
 
+import asyncio
 import dataclasses
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from langchain.agents import create_agent
@@ -13,6 +15,7 @@ from langchain.agents.middleware import (
     ModelResponse,
     ToolCallLimitMiddleware,
     ToolCallRequest,
+    hook_config,
 )
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, ToolMessage
@@ -23,15 +26,19 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.errors import GraphBubbleUp
 from langgraph.graph.state import CompiledStateGraph
+from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from tiredai.config import AgentSettings, LLMSettings, Settings
+from tiredai.guardrail import REPLIES, Guard, build_guard
 from tiredai.search import describe_results, describe_search
 from tiredai.tracing import trace_turn
 
 APP_TITLE = "TiredAI"
 # How many times the model is asked again when none of its tool calls could be parsed.
 UNPARSABLE_CALL_RETRIES = 2
+# The graph node of the Guardrail middleware, which writes the guardrail's reply when it blocks a message.
+GUARDRAIL_NODE = "Guardrail.before_agent"
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +92,55 @@ class RecentHistory(AgentMiddleware):
         self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
     ) -> ModelResponse:
         return await handler(self._trimmed(request))
+
+
+@dataclass(frozen=True)
+class TurnContext:
+    """Settings of one shopper message, passed to the agent run as its context."""
+
+    guardrail: bool = False  # check the message with the guardrail before the model sees it
+
+
+def guard_input(messages: Sequence[BaseMessage], history_messages: int) -> tuple[list[dict], str]:
+    """What the guardrail reads about the latest shopper message: the chat messages before it that the model
+    would also see (the same whole turns as RecentHistory), as {"role", "content"}, and the message itself."""
+    shown = transcript(recent_turns(messages, history_messages))
+    return [{"role": m["role"], "content": m["content"]} for m in shown[:-1]], shown[-1]["content"]
+
+
+class Guardrail(AgentMiddleware):
+    """Before the agent runs, asks the guard about the shopper's message when the turn has the guardrail on
+    (TurnContext). A blocked message gets the guardrail's reply for its reason, with the decision in its
+    response_metadata["guardrail"], and the turn ends without calling the model."""
+
+    def __init__(self, guard: Guard, history_messages: int):
+        super().__init__()
+        self.guard = guard
+        self.history_messages = history_messages
+
+    @staticmethod
+    def _on(runtime: Runtime) -> bool:
+        return bool(runtime.context and runtime.context.guardrail)
+
+    def _outcome(self, decision: dict) -> dict | None:
+        if not decision["blocked"]:
+            return None
+        saved = {k: v for k, v in decision.items() if k != "error"}
+        return {"messages": [AIMessage(content=REPLIES[decision["reason"]], response_metadata={"guardrail": saved})],
+                "jump_to": "end"}  # fmt: skip
+
+    @hook_config(can_jump_to=["end"])
+    def before_agent(self, state, runtime: Runtime) -> dict | None:
+        if not self._on(runtime):
+            return None
+        return self._outcome(self.guard.check(*guard_input(state["messages"], self.history_messages)))
+
+    @hook_config(can_jump_to=["end"])
+    async def abefore_agent(self, state, runtime: Runtime) -> dict | None:
+        if not self._on(runtime):
+            return None
+        conversation, message = guard_input(state["messages"], self.history_messages)
+        return self._outcome(await asyncio.to_thread(self.guard.check, conversation, message))
 
 
 class UnparsableToolCallsError(RuntimeError):
@@ -183,8 +239,9 @@ class ToolErrors(AgentMiddleware):
             return _tool_failure(request, exc)
 
 
-def agent_middleware(limits: AgentSettings) -> list[AgentMiddleware]:
+def agent_middleware(limits: AgentSettings, guard: Guard | None = None) -> list[AgentMiddleware]:
     return [
+        *([Guardrail(guard, limits.history_messages)] if guard else []),
         RecentHistory(limits.history_messages),
         UnparsableToolCalls(),
         ToolErrors(),
@@ -199,16 +256,25 @@ def build_agent(
     model: BaseChatModel | None = None,
     tools: Sequence[BaseTool] = (),
     checkpointer: BaseCheckpointSaver | None = None,
+    guard: Guard | None = None,
 ) -> CompiledStateGraph:
-    """Agent with the system prompt from SYSTEM_PROMPT_PATH and the AGENT_* limits; history is kept per thread id."""
+    """Agent with the system prompt from SYSTEM_PROMPT_PATH and the AGENT_* limits; history is kept per thread id.
+
+    With an OpenRouter key (or `guard`), it has the guardrail, which each turn turns on with TurnContext.
+    """
     return create_agent(
         model or build_chat_model(settings.llm, settings.openrouter_api_key),
         tools=list(tools),
         system_prompt=load_system_prompt(settings.llm.system_prompt_path),
-        middleware=agent_middleware(settings.agent),
+        middleware=agent_middleware(settings.agent, guard or build_guard(settings.guardrail, settings.openrouter_api_key)),
         checkpointer=checkpointer or InMemorySaver(),
+        context_schema=TurnContext,
         name="tire_agent",  # "agent" in the name makes Langfuse type the agent loop as an agent
     )
+
+
+def has_guardrail(agent: CompiledStateGraph) -> bool:
+    return GUARDRAIL_NODE in agent.nodes
 
 
 def thread_config(thread_id: str) -> RunnableConfig:
@@ -228,13 +294,15 @@ class _AnswerText:
 
     Only text from the model is shown: tool results and reasoning blocks are not. Text from a later
     model step (after a tool call) starts with SEGMENT_SEPARATOR, unless the earlier steps wrote only
-    whitespace.
+    whitespace. A message the guardrail blocked gets its reply, which comes whole.
     """
 
     def __init__(self):
         self.step = None  # the model step that last wrote visible text
 
     def __call__(self, chunk: object, metadata: dict) -> str:
+        if metadata.get("langgraph_node") == GUARDRAIL_NODE and isinstance(chunk, AIMessage):
+            return chunk.text
         if not (isinstance(chunk, AIMessageChunk) and metadata.get("langgraph_node") == "model"):
             return ""
         text = chunk.text
@@ -259,14 +327,25 @@ def _traced_config(thread_id: str, callbacks: list) -> RunnableConfig:
     return {**thread_config(thread_id), "callbacks": callbacks}
 
 
+def _turn_metadata(agent: CompiledStateGraph, metadata: dict | None, guardrail: bool) -> dict:
+    return {**(metadata or {}), "guardrail": guardrail and has_guardrail(agent)}
+
+
 def stream_reply(
-    agent: CompiledStateGraph, message: str, thread_id: str, *, source: str = "cli", metadata: dict | None = None
+    agent: CompiledStateGraph,
+    message: str,
+    thread_id: str,
+    *,
+    source: str = "cli",
+    metadata: dict | None = None,
+    guardrail: bool = False,
 ) -> Iterator[str]:
     """Send one shopper message and yield the assistant's answer text as it is generated."""
-    with trace_turn(message, thread_id, source=source, metadata=metadata or {}) as turn:
+    with trace_turn(message, thread_id, source=source, metadata=_turn_metadata(agent, metadata, guardrail)) as turn:
         answer_text, answer = _AnswerText(), []
         config = _traced_config(thread_id, turn.callbacks)
-        for chunk, chunk_metadata in agent.stream(_user_input(message), config, stream_mode="messages"):
+        context = TurnContext(guardrail=guardrail)
+        for chunk, chunk_metadata in agent.stream(_user_input(message), config, stream_mode="messages", context=context):
             if text := answer_text(chunk, chunk_metadata):
                 answer.append(text)
                 yield text
@@ -323,27 +402,35 @@ async def astream_turn(
     *,
     source: str = "chat-stream",
     metadata: dict | None = None,
+    guardrail: bool = False,
 ) -> AsyncIterator[dict]:
     """One shopper message as a stream of events for the UI, traced as one Langfuse trace.
 
-    Yields {"type": "status", "stage": "thinking" | "searching" | "results", "text": ...} as the
-    agent works, {"type": "tool_call", **tool_call_details} when a tool call has its result, and
-    {"type": "token", "text": ...} for each chunk of the answer.
+    Yields {"type": "status", "stage": "checking" | "thinking" | "searching" | "results", "text": ...}
+    as the agent works (checking: the guardrail looks at the message, when `guardrail` is on and the
+    agent has one), {"type": "tool_call", **tool_call_details} when a tool call has its result, and
+    {"type": "token", "text": ...} for each chunk of the answer. When the guardrail blocks the message,
+    its reply is the only token, followed by {"type": "guardrail", **decision}.
     """
-    with trace_turn(message, thread_id, source=source, metadata=metadata or {}) as turn:
+    metadata = _turn_metadata(agent, metadata, guardrail)
+    with trace_turn(message, thread_id, source=source, metadata=metadata) as turn:
         answer = []
-        async for event in _astream_events(agent, message, _traced_config(thread_id, turn.callbacks)):
+        events = _astream_events(agent, message, _traced_config(thread_id, turn.callbacks), metadata["guardrail"])
+        async for event in events:
             if event["type"] == "token":
                 answer.append(event["text"])
             yield event
         turn.finish("".join(answer))
 
 
-async def _astream_events(agent: CompiledStateGraph, message: str, config: RunnableConfig) -> AsyncIterator[dict]:
-    yield _status("thinking", "Thinking…")
+async def _astream_events(
+    agent: CompiledStateGraph, message: str, config: RunnableConfig, guardrail: bool
+) -> AsyncIterator[dict]:
+    yield _status("checking", "Checking the message…") if guardrail else _status("thinking", "Thinking…")
     answer_text = _AnswerText()
     calls = {}  # this turn's tool calls by id, to pair with their results
-    async for mode, chunk in agent.astream(_user_input(message), config, stream_mode=["messages", "updates"]):
+    stream = agent.astream(_user_input(message), config, stream_mode=["messages", "updates"], context=TurnContext(guardrail=guardrail))
+    async for mode, chunk in stream:
         if mode == "messages":
             if text := answer_text(*chunk):
                 yield {"type": "token", "text": text}
@@ -351,6 +438,12 @@ async def _astream_events(agent: CompiledStateGraph, message: str, config: Runna
         # "updates" carry each finished step: model steps with complete tool calls, then tool results.
         for node, update in chunk.items():
             messages = (update or {}).get("messages", [])
+            if node == GUARDRAIL_NODE:
+                if messages:  # blocked: its reply was the answer
+                    yield {"type": "guardrail", **messages[-1].response_metadata["guardrail"]}
+                elif guardrail:
+                    yield _status("thinking", "Thinking…")
+                continue
             for item in messages:
                 if isinstance(item, AIMessage):
                     for call in item.tool_calls:
@@ -365,20 +458,12 @@ async def _astream_events(agent: CompiledStateGraph, message: str, config: Runna
                 yield _status("thinking", "Thinking…")  # the model runs again with the results
 
 
-async def astream_reply(
-    agent: CompiledStateGraph, message: str, thread_id: str, *, source: str = "chat", metadata: dict | None = None
-) -> AsyncIterator[str]:
-    """Only the answer text of astream_turn."""
-    async for event in astream_turn(agent, message, thread_id, source=source, metadata=metadata):
-        if event["type"] == "token":
-            yield event["text"]
-
-
 def transcript(messages: Sequence[BaseMessage]) -> list[dict]:
     """The conversation as the shopper saw it: {"role": "user" | "assistant", "content": ...} per message.
 
     A turn's answer text is joined like the stream sent it, and the answer lists the turn's tool calls
-    under "tool_calls" (see tool_call_details). A turn whose model wrote no text has no answer.
+    under "tool_calls" (see tool_call_details). A turn whose model wrote no text has no answer. An
+    answer from the guardrail has its decision under "guardrail".
     """
     results = {m.tool_call_id: m for m in messages if isinstance(m, ToolMessage)}
     turns = []
@@ -389,6 +474,8 @@ def transcript(messages: Sequence[BaseMessage]) -> list[dict]:
             if not turns or turns[-1]["role"] != "assistant":
                 turns.append({"role": "assistant", "content": "", "tool_calls": []})
             answer = turns[-1]
+            if "guardrail" in message.response_metadata:
+                answer["guardrail"] = message.response_metadata["guardrail"]
             if message.text.strip():
                 answer["content"] += (SEGMENT_SEPARATOR if answer["content"] else "") + message.text
             answer["tool_calls"] += [tool_call_details(c, results.get(c["id"])) for c in _tool_calls(message)]

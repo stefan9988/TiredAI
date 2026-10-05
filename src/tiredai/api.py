@@ -1,6 +1,6 @@
 """HTTP API for the tire assistant. Conversation history is stored in SQLite and survives restarts.
 
-    POST /chat                          JSON reply
+    POST /chat                          JSON reply (the guardrail checks the message first unless it says guardrail: false)
     POST /chat/stream                   the same reply streamed as Server-Sent Events
     GET  /conversations                 every chat, most recently active first
     GET  /conversations/{id}/messages   a chat's messages, to reopen it
@@ -28,12 +28,13 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel, Field, field_validator
 
 from tiredai import tracing
-from tiredai.agent import aget_transcript, astream_reply, astream_turn, build_agent, trace_metadata
+from tiredai.agent import aget_transcript, astream_turn, build_agent, has_guardrail, trace_metadata
 from tiredai.benchmarks import reports
 from tiredai.benchmarks.experiments import RESULTS_DIR
 from tiredai.config import Settings
 from tiredai.conversations import Conversation, ConversationStore
 from tiredai.embeddings import build_encoder
+from tiredai.guardrail import Guard
 from tiredai.search import QueryEncoder, catalog_tools
 from tiredai.vectorstore import connect
 
@@ -51,6 +52,11 @@ class ChatRequest(BaseModel):
         max_length=100,
         description="Omit to start a new conversation; send the id from an earlier reply to continue it.",
     )
+    guardrail: bool = Field(
+        default=True,
+        description="Check the message with the guardrail first; a blocked message gets its fixed reply and the "
+                    "chat model never sees it. False sends it straight to the chat model.",
+    )  # fmt: skip
 
     @field_validator("message")
     @classmethod
@@ -60,9 +66,21 @@ class ChatRequest(BaseModel):
         return message
 
 
+class GuardrailDecision(BaseModel):
+    """Why the guardrail answered instead of the chat model."""
+
+    blocked: bool
+    reason: Literal["off_topic", "manipulation", "harmful"]
+    block_score: float = Field(description="max(1 - in_scope, manipulation, harmful); blocked at or above the threshold.")
+    threshold: float
+    probabilities: dict[str, float] = Field(description="The guardrail model's probability of yes for each question.")
+    model: str | None = Field(description="The guardrail model that answered.")
+
+
 class ChatResponse(BaseModel):
     conversation_id: str
     reply: str
+    guardrail: GuardrailDecision | None = Field(default=None, description="Set when the reply is the guardrail's.")
 
 
 class ToolCall(BaseModel):
@@ -81,6 +99,7 @@ class ChatMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str
     tool_calls: list[ToolCall] = Field(default_factory=list, description="An answer's tool calls, in order.")
+    guardrail: GuardrailDecision | None = Field(default=None, description="Set when the answer is the guardrail's.")
 
 
 class VectorStoreHealth(BaseModel):
@@ -124,10 +143,17 @@ class BenchmarksResponse(BaseModel):
     guardrail: BenchmarkResults
 
 
+class GuardrailHealth(BaseModel):
+    available: bool = Field(description="False without an OpenRouter key: requests with guardrail on skip it.")
+    model: str
+    threshold: float
+
+
 class HealthResponse(BaseModel):
     status: Literal["ok", "degraded"]
     model: str
     vector_store: VectorStoreHealth
+    guardrail: GuardrailHealth
 
 
 def create_app(
@@ -135,10 +161,11 @@ def create_app(
     *,
     model: BaseChatModel | None = None,
     encoder: QueryEncoder | None = None,
+    guard: Guard | None = None,
     benchmark_results: Path = RESULTS_DIR,
 ) -> FastAPI:
-    """Build the app; `model` and `encoder` replace the configured models, `benchmark_results` the
-    reports folder (used by tests)."""
+    """Build the app; `model`, `encoder` and `guard` replace the configured models, `benchmark_results`
+    the reports folder (used by tests)."""
     settings = settings or Settings.load()
     metadata = trace_metadata(settings)
 
@@ -163,7 +190,7 @@ def create_app(
                 lambda: encoder or build_encoder(settings),
                 max_results=settings.agent.max_search_results,
             )
-            app.state.agent = build_agent(settings, model=model, tools=tools, checkpointer=checkpointer)
+            app.state.agent = build_agent(settings, model=model, tools=tools, checkpointer=checkpointer, guard=guard)
             if added := await app.state.conversations.backfill(checkpointer, app.state.agent):
                 logger.info("Added %d earlier conversations to the chat list", added)
             # One turn at a time per conversation, so concurrent requests can't interleave its history.
@@ -190,26 +217,29 @@ def create_app(
     async def chat(body: ChatRequest, request: Request, conversation_id: str = Depends(resolve_conversation)) -> ChatResponse:
         """Send a message and get the whole reply at once."""
         await request.app.state.conversations.record_turn(conversation_id, body.message)
+        parts, decision = [], None
         async with request.app.state.locks[conversation_id]:
             try:
-                parts = [
-                    text
-                    async for text in astream_reply(
-                        request.app.state.agent, body.message, conversation_id, source="chat", metadata=metadata
-                    )
-                ]
+                async for event in astream_turn(request.app.state.agent, body.message, conversation_id, source="chat",
+                                                metadata=metadata, guardrail=body.guardrail):  # fmt: skip
+                    if event["type"] == "token":
+                        parts.append(event["text"])
+                    elif event["type"] == "guardrail":
+                        decision = GuardrailDecision(**event)
             except Exception as exc:
                 logger.exception("Model request failed")
                 raise HTTPException(502, f"Model request failed: {exc}") from exc
-        return ChatResponse(conversation_id=conversation_id, reply="".join(parts))
+        return ChatResponse(conversation_id=conversation_id, reply="".join(parts), guardrail=decision)
 
     @app.post("/chat/stream", response_class=EventSourceResponse)
     async def chat_stream(body: ChatRequest, request: Request, conversation_id: str = Depends(resolve_conversation)):
         """Send a message and receive the reply as Server-Sent Events.
 
         Events: `start` {conversation_id}; then, as the agent works, `status` {stage, text} (stage is
-        thinking, searching or results), `tool_call` {id, name, args, error, result} when a tool call
-        has its result (like ToolCall), and `token` {text} for each chunk of the answer; then `end`
+        checking while the guardrail looks at the message, then thinking, searching or results),
+        `tool_call` {id, name, args, error, result} when a tool call has its result (like ToolCall),
+        and `token` {text} for each chunk of the answer; when the guardrail blocks the message, its
+        reply is the only token, followed by `guardrail` (like GuardrailDecision); then `end`
         {conversation_id, reply}. If the model fails, `error` {message} replaces `end`. The chat is
         listed by /conversations from `start` on.
         """
@@ -219,7 +249,8 @@ def create_app(
         async with request.app.state.locks[conversation_id]:
             try:
                 async for event in astream_turn(
-                    request.app.state.agent, body.message, conversation_id, source="chat-stream", metadata=metadata
+                    request.app.state.agent, body.message, conversation_id, source="chat-stream", metadata=metadata,
+                    guardrail=body.guardrail,
                 ):
                     kind = event.pop("type")
                     if kind == "token":
@@ -268,6 +299,8 @@ def create_app(
             status="ok" if vector_store.status == "ok" else "degraded",
             model=settings.llm.model,
             vector_store=vector_store,
+            guardrail=GuardrailHealth(available=has_guardrail(request.app.state.agent), model=settings.guardrail.model,
+                                      threshold=settings.guardrail.threshold),  # fmt: skip
         )
 
     @app.get("/", include_in_schema=False)

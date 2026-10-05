@@ -3,6 +3,7 @@ import os
 import zlib
 from collections import Counter
 
+import httpx
 import pandas as pd
 import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -14,9 +15,11 @@ from pydantic import Field
 from qdrant_client import models
 
 from tiredai import tracing
+from tiredai.guardrail import Guard, JevClient
 
 # Tests never send traces: empty keys keep tracing off, and load_dotenv doesn't override them with .env.
-os.environ.update(LANGFUSE_PUBLIC_KEY="", LANGFUSE_SECRET_KEY="")
+# Nor do they call OpenRouter: without its key the agent has no guardrail unless a test passes a fake one.
+os.environ.update(LANGFUSE_PUBLIC_KEY="", LANGFUSE_SECRET_KEY="", OPENROUTER_API_KEY="")
 
 # One valid raw CSV row, as text exactly like the catalog stores it.
 RAW_ROW = {
@@ -176,3 +179,48 @@ def traces(langfuse_in_memory):
     tracing.use_client(client, KEY)
     yield Traces(client, exporter)
     tracing.use_client(None)
+
+
+def decisions(**probabilities) -> dict:
+    """A Decisions API answer with these probabilities of yes."""
+    return {"model": "typesafe/jev-1.13-20260917", "answers": {name: {"type": "noul", "noul": p} for name, p in probabilities.items()},
+            "usage": {"input_tokens": 600, "output_tokens": 30, "cost": 0.0000252}}  # fmt: skip
+
+
+class FakeDecisions:
+    """The Decisions API: replies in order, the last one again after that (a dict is a 200 body, an int an
+    error status, an exception is raised, e.g. httpx.ReadTimeout), recording each request."""
+
+    def __init__(self, *replies):
+        self.replies = list(replies)
+        self.requests = []
+
+    def states(self) -> list[dict]:
+        return [json.loads(r.content)["state"] for r in self.requests]
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        reply = self.replies.pop(0) if len(self.replies) > 1 else self.replies[0]
+        if isinstance(reply, Exception):
+            raise reply
+        if isinstance(reply, int):
+            return httpx.Response(reply, text="provider says no")
+        return httpx.Response(200, json=reply)
+
+
+def jev_client(api: FakeDecisions, slept: list | None = None, max_retries: int = 3) -> JevClient:
+    return JevClient("test-key", "typesafe/jev-1.13", client=httpx.Client(transport=httpx.MockTransport(api)),
+                     max_retries=max_retries, sleep=(slept if slept is not None else []).append)  # fmt: skip
+
+
+def fake_guard(api: FakeDecisions, threshold: float = 0.7) -> Guard:
+    """The app's guard, on the fake Decisions API and without retries."""
+    return Guard(jev_client(api, max_retries=0), threshold)
+
+
+def sse_events(body: str) -> list[tuple[str, dict]]:
+    events = []
+    for block in body.strip().split("\n\n"):
+        fields = dict(line.split(": ", 1) for line in block.splitlines() if not line.startswith(":"))
+        events.append((fields["event"], json.loads(fields["data"])))
+    return events

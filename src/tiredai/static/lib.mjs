@@ -227,6 +227,27 @@ export function renderToolCalls(calls) {
     .join("");
 }
 
+// Why the guardrail answered instead of the chat model, by the reason the API gives.
+const GUARDRAIL_REASONS = { off_topic: "off-topic", manipulation: "tries to change the rules", harmful: "harmful request" };
+
+const SHIELD_ICON =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 3 8.3 7 9.5 4-1.2 7-5.1 7-9.5V6l-7-3Z" ' +
+  'fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
+
+const score = (value) => (typeof value === "number" ? value.toFixed(2) : "?");
+
+// The note under an answer the guardrail gave: its reason, and on hover the scores behind it.
+export function renderGuardrailNote(decision) {
+  const reason = GUARDRAIL_REASONS[decision.reason] ?? decision.reason ?? "blocked";
+  const probabilities = Object.entries(decision.probabilities ?? {}).map(([name, p]) => `${name.replace("_", " ")} ${score(p)}`);
+  const details = [`Block score ${score(decision.block_score)} (blocks at ${score(decision.threshold)})`, ...probabilities];
+  if (decision.model) details.push(decision.model);
+  return (
+    `<p class="guardrail-note" title="${escapeHtml(details.join(" · "))}">` +
+    `${SHIELD_ICON}<span>Answered by the guardrail: ${escapeHtml(reason)}</span></p>`
+  );
+}
+
 // The benchmark results replace the chat at /?view=benchmarks.
 export const BENCHMARKS_URL = "/?view=benchmarks";
 
