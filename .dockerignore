@@ -1,0 +1,10 @@
+.git
+.venv
+.cache
+.env
+.pytest_cache
+data
+tests
+**/__pycache__
+CLAUDE.md
+PROJECT_REQUIREMENTS.md

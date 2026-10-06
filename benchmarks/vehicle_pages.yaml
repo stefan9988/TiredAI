@@ -1,0 +1,414 @@
+# Tire-size pages of the vehicles in agent_cases.yaml, as the vehicle lookup found them; written by
+# scripts/capture_vehicle_pages.py. Don't edit by hand; capture again after adding a vehicle.
+sites:
+- tiresize.com
+- firestonecompleteautocare.com
+- mavis.com
+- goodyear.com
+max_results: 5
+vehicles:
+- vehicle:
+    year: 2016
+    make: Ford
+    model: Focus
+  captured_at: 2026-10-05 14:57 UTC
+  pages:
+  - site: goodyear.com
+    url: https://www.goodyear.com/en-us/vehicles/Ford/Focus/2016
+    title: Find 2016 Ford Focus Tires
+    excerpt: |-
+      ### Tire Size
+      Electric 225/50R17
+      RS 235/35R19
+      S 195/65R15
+      SE 215/50R17
+      SE 215/50R17
+      SE 215/55R16
+      ST 235/40R18
+      ST 235/40R18
+      Titanium 215/50R17
+      Titanium 215/50R17
+      Titanium with Handling Package 235/40R18
+      There are two places to find your tire size. Look directly on your tire sidewall or inside your driver’s side door jamb for your vehicle’s tire size.
+  - site: firestonecompleteautocare.com
+    url: https://vehicle.firestonecompleteautocare.com/ford/focus/2016/tires/
+    title: 2016 Ford Focus Tire Sizes | Firestone Complete Auto Care
+    excerpt: |-
+      ## 2016 Ford Focus Tires Sizes, Speed Ratings, and Inflation
+      | Trim Level | Tire Size | Speed Rating | Inflation in PSI F/R | |
+      | --- | --- | --- | --- | --- |
+      | 2016 Ford Focus ST* | 235/40ZR18 | W | 36 PSI/36 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus ST* | 235/40R18 | Y | 36 PSI/36 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus SE* | 215/55R16 | H | 35 PSI/35 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus SE* | 215/50R17 | H | 35 PSI/35 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus SE* | 215/50R17 | W | 35 PSI/35 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus Titanium* | 235/40ZR18 | W | 39 PSI/39 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus Titanium* | 215/50R17 | H | 35 PSI/35 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus Titanium* | 215/50R17 | W | 35 PSI/35 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus Electric | P225/50R17 | V | 38 PSI/38 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus RS | 235/35ZR19 | (Y) | 46 PSI/46 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus S | 195/65R15 | H | 35 PSI/35 PSI | SHOP THIS TIRE |
+      * Note: these models have different tire sizes depending on vehicle options.
+  - site: tiresize.com
+    url: https://tiresize.com/tires/Ford/Focus/2016/
+    title: 2016 Ford Focus Tire Sizes
+    excerpt: |-
+      2016 Ford Focus 5-Door SE
+      1. 215/55R16
+      2016 Ford Focus 5-Door Titanium
+      1. 215/50R17
+      2. 235/40R18
+      2016 Ford Focus Electric
+      225/50R17
+      2016 Ford Focus RS
+      235/35R19
+      2016 Ford Focus Sedan S
+      195/65R15
+      2016 Ford Focus Sedan SE
+      2016 Ford Focus Sedan Titanium
+      2016 Ford Focus ST
+      235/40R18
+  - site: mavis.com
+    url: https://www.mavis.com/vehicle/ford/focus/2016/
+    title: 2016 Ford Focus Tires | Correct Sizes & Installation
+    excerpt: |-
+      # 2016 Ford Focus Tires
+      ### Select a trim to shop tires that fit your 2016 Ford Focus. Need help? Learn how to find your tire size.
+      Trim Option Standard Tire Size
+      - Electric P225/50R17
+      - RS 235/35ZR19
+      - S 195/65R15
+      - SE 215/55R16
+      Trim Option Standard Tire Size
+      - ST 235/40R18
+      - Titanium 215/50R17
+      - Titanium w/Handling Pkg. 235/40ZR18
+  - site: goodyear.com
+    url: https://www.goodyear.com/en-ca/vehicles/Ford/Focus/2016
+    title: Find 2016 Ford Focus Tires | Goodyear
+    excerpt: |-
+      S 195/65R15
+      SE 215/50R17
+      SE 215/50R17
+      SE 215/55R16
+      ST 235/40R18
+      Titanium 215/50R17
+      Titanium 215/50R17
+      Titanium with Handling Package 235/40R18
+      ### Tire Size
+      Electric 225/50R17
+      S 195/65R15
+      SE 215/50R17
+      SE 215/50R17
+      SE 215/55R16
+      Titanium 215/50R17
+      Titanium 215/50R17
+      Titanium with Handling Package 235/40R18
+      Electric 225/50R17
+      RS 235/35R19
+      ST 235/40R18
+      ST 235/40R18
+- vehicle:
+    year: 2016
+    make: Chevrolet
+    model: Corvette
+  captured_at: 2026-10-05 14:57 UTC
+  pages:
+  - site: firestonecompleteautocare.com
+    url: https://vehicle.firestonecompleteautocare.com/chevrolet/corvette/2016/tires/
+    title: 2016 Chevrolet Corvette Tire Sizes
+    excerpt: |-
+      ## 2016 Chevrolet Corvette Tires Sizes, Speed Ratings, and Inflation
+      | Trim Level | Tire Size | Speed Rating | Inflation in PSI F/R | |
+      | --- | --- | --- | --- | --- |
+      | 2016 Chevrolet Corvette Stingray* | P285/30ZR20 | (Y) | PSI/30 PSI | SHOP THIS TIRE |
+      | 2016 Chevrolet Corvette Stingray* | P285/35ZR19 | (Y) | PSI/30 PSI | SHOP THIS TIRE |
+      | 2016 Chevrolet Corvette Stingray* | P245/35ZR19 | (Y) | 30 PSI/ PSI | SHOP THIS TIRE |
+      | 2016 Chevrolet Corvette Stingray* | P245/40ZR18 | (Y) | 30 PSI/ PSI | SHOP THIS TIRE |
+      | 2016 Chevrolet Corvette Z06* | P285/30ZR19 | (Y) | 30 PSI/ PSI | SHOP THIS TIRE |
+      | 2016 Chevrolet Corvette Z06* | P335/25ZR20 | (Y) | PSI/30 PSI | SHOP THIS TIRE |
+  - site: tiresize.com
+    url: https://tiresize.com/tires/Chevrolet/Corvette/2016/
+    title: 2016 Chevrolet Corvette Tire Sizes
+    excerpt: |-
+      # 2016 Chevrolet Corvette Tire Sizes
+      2016 Chevrolet Corvette Convertible Standard Model
+      (front) 245/40R18
+      (rear) 285/35R19
+      2016 Chevrolet Corvette Convertible Z51 Package
+      (front) 245/35R19
+      (rear) 285/30R20
+      2016 Chevrolet Corvette Coupe Standard Model
+      (front) 245/40R18
+      (rear) 285/35R19
+      2016 Chevrolet Corvette Coupe Z51 Package
+      (front) 245/35R19
+      (rear) 285/30R20
+      2016 Chevrolet Corvette Z06 Convertible
+      (front) 285/30R19
+      (rear) 335/25R20
+      2016 Chevrolet Corvette Z06 Coupe
+      (front) 285/30R19
+      (rear) 335/25R20
+      2016 Chevrolet Corvette Z07 Convertible
+      (front) 285/30R19
+      (rear) 335/25R20
+      2016 Chevrolet Corvette Z07 Coupe
+      (front) 285/30R19
+      (rear) 335/25R20
+  - site: goodyear.com
+    url: https://www.goodyear.com/en-us/vehicles/Chevrolet/Corvette/2016
+    title: Find 2016 Chevrolet Corvette Tires
+    excerpt: |-
+      ### Tire Size
+      Stingray 245/40R18
+      Stingray Front: 245/40R18, Rear: 285/35R19
+      Stingray 285/35R19
+      Stingray with Z51 Performance Package 245/35R19
+      Stingray with Z51 Performance Package Front: 245/35R19, Rear: 285/30R20
+      Stingray with Z51 Performance Package 285/30R20
+      Z06 285/30R19
+      Z06 Front: 285/30R19, Rear: 335/25R20
+      Z06 335/25R20
+      ### Tire Size
+      Stingray 245/40R18
+      Stingray Front: 245/40R18, Rear: 285/35R19
+      Stingray with Z51 Performance Package 245/35R19
+      Stingray with Z51 Performance Package Front: 245/35R19, Rear: 285/30R20
+      ### Tire Size
+      Stingray with Z51 Performance Package 285/30R20
+      Z06 285/30R19
+      Z06 Front: 285/30R19, Rear: 335/25R20
+      Z06 335/25R20
+      Stingray 245/40R18
+      Z06 285/30R19
+      Z06 Front: 285/30R19, Rear: 335/25R20
+      Z06 335/25R20
+      There are two places to find your tire size. Look directly on your tire sidewall or inside your driver’s side door jamb for your vehicle’s tire size.
+  - site: mavis.com
+    url: https://www.mavis.com/vehicle/chevrolet/corvette/2016/
+    title: 2016 Chevrolet Corvette Tires | Correct Sizes & Installation
+    excerpt: |-
+      ### Select a trim to shop tires that fit your 2016 Chevrolet Corvette. Need help? Learn how to find your tire size.
+      Trim Option Standard Tire Size
+      - Stingray FRONT P245/40ZR18 REAR P285/35ZR19
+      - Stingray w/Z51 Performance Pkg. FRONT P245/35ZR19 REAR P285/30ZR20
+      - Z06 FRONT P285/30ZR19 REAR P335/25ZR20
+  - site: mavis.com
+    url: https://www.mavis.com/vehicle/chevrolet/corvette/2016/stingray/
+    title: 2016 Chevrolet Corvette Stingray Tires
+    excerpt: |-
+      #### The standard tire size for the 2016 Chevrolet Corvette Stingray is 18" P245/40ZR18.
+      ### The standard tire size for the 2016 Chevrolet Corvette Stingray is 18" P245/40ZR18 / 19" P285/35ZR19.
+      P245/40ZR18 for the front, and P285/35ZR19 for the
+- vehicle:
+    year: 2019
+    make: Toyota
+    model: RAV4
+  captured_at: 2026-10-05 14:57 UTC
+  pages:
+  - site: mavis.com
+    url: https://www.mavis.com/vehicle/toyota/rav4/2019/
+    title: 2019 Toyota RAV4 Tires | Correct Sizes & Installation
+    excerpt: |-
+      Trim Option Standard Tire Size
+      - Adventure 235/55R19
+      - Hybrid LE 225/65R17
+      - Hybrid Limited 225/60R18
+      - Hybrid XLE 225/65R17
+      - Hybrid XSE 225/60R18
+      Trim Option Standard Tire Size
+      - LE (AWD) 225/65R17
+      - LE (FWD) 225/65R17
+      - Limited (AWD) 235/55R19
+      - Limited (FWD) 235/55R19
+      - XLE (AWD) 225/65R17
+      Trim Option Standard Tire Size
+      - XLE (FWD) 225/65R17
+      - XLE Premium (AWD) 235/55R19
+      - XLE Premium (FWD) 235/55R19
+  - site: tiresize.com
+    url: https://tiresize.com/tires/Toyota/RAV4/2019/
+    title: 2019 Toyota RAV4 Tire Sizes
+    excerpt: |-
+      # 2019 Toyota RAV4 Tire Sizes
+      2019 Toyota RAV4 Adventure
+      235/55R19
+      2019 Toyota RAV4 LE
+      225/65R17
+      2019 Toyota RAV4 LE Hybrid
+      225/65R17
+      2019 Toyota RAV4 Limited
+      235/55R19
+      2019 Toyota RAV4 Limited Hybrid
+      225/60R18
+      2019 Toyota RAV4 XLE
+      225/65R17
+      2019 Toyota RAV4 XLE Hybrid
+      225/65R17
+      2019 Toyota RAV4 XLE Premium
+      235/55R19
+      2019 Toyota RAV4 XSE Hybrid
+      225/60R18
+  - site: firestonecompleteautocare.com
+    url: https://vehicle.firestonecompleteautocare.com/toyota/rav4/2019/
+    title: 2019 Toyota RAV4 Repair, Service & Tires | Firestone Complete Auto Care
+    excerpt: |-
+      | 2019 Toyota RAV4 XLE Premium* | V | 35 PSI/35 PSI | 235/55R19 |
+      | 2019 Toyota RAV4 Hybrid LE* | H | 36 PSI/36 PSI | 225/65R17 |
+      | 2019 Toyota RAV4 Hybrid LE* | H | 36 PSI/36 PSI | 225/65R17 |
+      | 2019 Toyota RAV4 Hybrid LE* | H | 36 PSI/36 PSI | 225/65R17 |
+      | 2019 Toyota RAV4 Hybrid XLE* | H | 36 PSI/36 PSI | 225/65R17 |
+      | 2019 Toyota RAV4 Limited* | V | 33 PSI/33 PSI | 235/55R19 |
+      | 2019 Toyota RAV4 Limited* | V | 33 PSI/33 PSI | 235/55R19 |
+      | 2019 Toyota RAV4 Limited* | V | 35 PSI/35 PSI | 235/55R19 |
+      | 2019 Toyota RAV4 Limited* | V | 35 PSI/35 PSI | 235/55R19 |
+      | 2019 Toyota RAV4 Adventure* | V | 35 PSI/35 PSI | 235/55R19 |
+      | 2019 Toyota RAV4 Adventure* | V | 35 PSI/35 PSI | 235/55R19 |
+      | 2019 Toyota RAV4 Adventure* | V | 35 PSI/35 PSI | 235/55R19 |
+      | 2019 Toyota RAV4 Adventure* | V | 35 PSI/35 PSI | 235/55R19 |
+      | 2019 Toyota RAV4 Adventure* | V | 35 PSI/35 PSI | 235/55R19 |
+      | 2019 Toyota RAV4 Hybrid XSE* | H | 33 PSI/33 PSI | 225/60R18 |
+      | 2019 Toyota RAV4 Hybrid XSE* | H | 33 PSI/33 PSI | 225/60R18 |
+      | 2019 Toyota RAV4 Hybrid XSE* | H | 33 PSI/33 PSI | 225/60R18 |
+      | 2019 Toyota RAV4 Hybrid XSE* | H | 33 PSI/33 PSI | 225/60R18 |
+  - site: firestonecompleteautocare.com
+    url: https://services.firestonecompleteautocare.com/toyota/rav4-2019/
+    title: General 2019 Toyota RAV4 Maintenance Information & Schedule
+    excerpt: |-
+      Below are the common tire sizes for some of the most popular Toyota RAV4 trims:
+      | Trim | Size |
+      | --- | --- |
+      | Hybrid XSE | 225/60R18 |
+      | LE/Hybrid | 225/65R17 |
+      | XLE/Hybrid XLE | 225/65R17 |
+      | XLE Premium | 235/55R19 |
+      | Adventure/TRD Off-Road | 235/55R19 or 225/60R18 |
+      | Limited/Hybrid Limited | 235/55R19 |
+  - site: goodyear.com
+    url: https://www.goodyear.com/en-us/vehicles/Toyota/RAV4/2019
+    title: Find 2019 Toyota RAV4 Tires
+    excerpt: |-
+      ### Version/Option
+      ### Tire Size
+      235/55R19
+      225/65R17
+      225/60R18
+      225/65R17
+      225/60R18
+      225/65R17
+      225/65R17
+      235/55R19
+      235/55R19
+      225/65R17
+      225/65R17
+      XLE Premium All-wheel drive
+      235/55R19
+      XLE Premium Front-wheel drive
+      235/55R19
+      ### Tire Size
+      235/55R19
+      225/65R17
+      225/60R18
+      235/55R19
+      235/55R19
+      235/55R19
+      There are two places to find your tire size. Look directly on your tire sidewall or inside your driver’s side door jamb for your vehicle’s tire size.
+- vehicle:
+    year: 2021
+    make: Ford
+    model: Focus
+  captured_at: 2026-10-05 14:57 UTC
+  pages:
+  - site: goodyear.com
+    url: https://www.goodyear.com/en-us/vehicles/Ford/Focus/2018
+    title: Find 2018 Ford Focus Tires | Goodyear
+    excerpt: |-
+      ## ... for your 2018 Ford Focus
+      ### Tire Size
+      225/50R17
+      235/35R19
+      195/65R15
+      215/50R17
+      215/50R17
+      15/ ... R16
+      215/50R1
+      2
+      ### Tire Size
+      ### Tire Size
+      235/40R18
+      215/50R17
+      215/50R17
+      Titanium with Handling Package
+      235/40R18
+      There are two places to find your tire size. Look directly on your tire sidewall or inside your driver’s side door jamb for your vehicle’s tire size.
+  - site: goodyear.com
+    url: https://www.goodyear.com/en-us/vehicles/Ford/Focus/2016
+    title: Find 2016 Ford Focus Tires | Goodyear
+    excerpt: |-
+      ### Tire Size
+      Electric 225/50R17
+      RS 235/35R19
+      S 195/65R15
+      SE 215/50R17
+      SE 215/50R17
+      SE 215/55R16
+      ST 235/40R18
+      ST 235/40R18
+      Titanium 215/50R17
+      Titanium 215/50R17
+      Titanium with Handling Package 235/40R18
+  - site: mavis.com
+    url: https://www.mavis.com/vehicle/ford/focus/2017/
+    title: 2017 Ford Focus Tires | Correct Sizes & Installation | Mavis
+    excerpt: |-
+      # 2017 Ford Focus Tires
+      ### Select a trim to shop tires that fit your 2017 Ford Focus. Need help? Learn how to find your tire size.
+      Trim Option Standard Tire Size
+      - Electric P225/50R17
+      - RS 235/35ZR19
+      - S 195/65R15
+      - SE 215/55R16
+      - SE (SFE Pkg.) 215/55R16
+      Trim Option Standard Tire Size
+      - SEL 215/50R17
+      - ST 235/40R18
+      - Titanium 215/50R17
+      - Titanium w/Handling Pkg. 235/40ZR18
+      017
+      Because the 2017 Focus features different wheel options depending on the trim level, there isn't just one standard size. To make sure you get a perfect fit, you should check the tire size placard on your driver-side door jamb or select your trim in the menu above, to see the factory-recommended sizes for your Focus.
+  - site: firestonecompleteautocare.com
+    url: https://vehicle.firestonecompleteautocare.com/ford/focus/2016/tires/
+    title: 2016 Ford Focus Tire Sizes | Firestone Complete Auto Care
+    excerpt: |-
+      ## 2016 Ford Focus Tires Sizes, Speed Ratings, and Inflation
+      Not sure about your Ford Focus tire size? Use the following chart to find information on tire size, speed rating, and inflation.
+      | Trim Level | Tire Size | Speed Rating | Inflation in PSI F/R | |
+      | --- | --- | --- | --- | --- |
+      | 2016 Ford Focus ST* | 235/40ZR18 | W | 36 PSI/36 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus ST* | 235/40R18 | Y | 36 PSI/36 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus SE* | 215/55R16 | H | 35 PSI/35 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus SE* | 215/50R17 | H | 35 PSI/35 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus SE* | 215/50R17 | W | 35 PSI/35 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus Titanium* | 235/40ZR18 | W | 39 PSI/39 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus Titanium* | 215/50R17 | H | 35 PSI/35 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus Titanium* | 215/50R17 | W | 35 PSI/35 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus Electric | P225/50R17 | V | 38 PSI/38 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus RS | 235/35ZR19 | (Y) | 46 PSI/46 PSI | SHOP THIS TIRE |
+      | 2016 Ford Focus S | 195/65R15 | H | 35 PSI/35 PSI | SHOP THIS TIRE |
+      Electric
+      * Note: these models have different tire sizes depending on vehicle options.
+  - site: goodyear.com
+    url: https://www.goodyear.com/en-us/vehicles/Ford/Focus/2014
+    title: Find 2014 Ford Focus Tires | Goodyear
+    excerpt: |-
+      Find 2014 Ford Focus Tires | Goodyear
+      ### Tire Size
+      Electric 225/50R17
+      S 195/65R15
+      SE 215/50R17
+      SE 215/55R16
+      SE with SFE Package 215/55R16
+      ST 235/40R18
+      Titanium 215/50R17
+      Titanium with Handling Package 235/40R18

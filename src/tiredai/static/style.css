@@ -1,0 +1,910 @@
+:root {
+  --bg: #ffffff;
+  --surface: #f4f5f7;
+  --border: #e3e5e8;
+  --text: #1c1e21;
+  --muted: #6b7178;
+  --accent: #2f6fdf;
+  --accent-text: #ffffff;
+  --error: #c62828;
+  --warn: #b26a00;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171a;
+    --surface: #202328;
+    --border: #2e3238;
+    --text: #e8eaed;
+    --muted: #9aa0a6;
+    --accent: #5b8ef0;
+    --accent-text: #ffffff;
+    --error: #ef6b6b;
+    --warn: #e0a040;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.sidebar {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 10px;
+  width: 260px;
+  padding: 12px 10px;
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.new-chat {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.new-chat:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.new-chat:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Opens the benchmark results in place of the chat. */
+.benchmarks-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.benchmarks-link svg {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+
+.benchmarks-link:hover {
+  background: var(--border);
+}
+
+.benchmarks-link[aria-current="page"] {
+  background: var(--border);
+  font-weight: 600;
+}
+
+.benchmarks-link.busy {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* A line and a small heading set the chat list apart from the buttons above it. */
+.chats-heading {
+  margin: 4px 0 -6px;
+  padding: 14px 10px 0;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.chats {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.chats.busy {
+  opacity: 0.6;
+}
+
+.chat {
+  flex: none;
+  padding: 7px 10px;
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 14px;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chat:hover {
+  background: var(--border);
+}
+
+.chat[aria-current="page"] {
+  background: var(--border);
+  font-weight: 600;
+}
+
+.no-chats {
+  margin: 4px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chat-pane {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* Phones: the chat list sits above the conversation. */
+@media (max-width: 720px) {
+  body {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: auto;
+    max-height: 30dvh;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .chat-pane {
+    min-height: 0;
+  }
+}
+
+.top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.brand strong {
+  font-size: 16px;
+}
+
+.brand span {
+  margin-left: 8px;
+  color: var(--muted);
+}
+
+.meta {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: right;
+}
+
+.meta.warn {
+  color: var(--warn);
+}
+
+#messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 16px;
+}
+
+#messages > * {
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.empty {
+  margin-top: 12vh;
+  text-align: center;
+}
+
+.empty h1 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.empty p {
+  margin: 0 0 20px;
+  color: var(--muted);
+}
+
+.examples {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+}
+
+.example {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.example:hover {
+  border-color: var(--accent);
+}
+
+.message {
+  margin-bottom: 20px;
+}
+
+.message.user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.bubble {
+  max-width: 80%;
+  padding: 10px 14px;
+  border-radius: 16px 16px 4px 16px;
+  background: var(--accent);
+  color: var(--accent-text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.status[hidden] {
+  display: none;
+}
+
+.status::before {
+  content: "";
+  flex: none;
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+.status.enter {
+  animation: fade-in 0.2s ease-out;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+}
+
+.answer {
+  overflow-wrap: anywhere;
+}
+
+.answer > :first-child {
+  margin-top: 0;
+}
+
+.answer p,
+.answer ul,
+.answer ol,
+.answer table {
+  margin: 0 0 10px;
+}
+
+.answer ul,
+.answer ol {
+  padding-left: 22px;
+}
+
+.answer li.sub {
+  margin-left: 18px;
+  list-style-type: circle;
+}
+
+.answer hr {
+  margin: 16px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.answer h3 {
+  margin: 14px 0 6px;
+  font-size: 15px;
+}
+
+.answer code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.answer table {
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.answer th,
+.answer td {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.answer th {
+  background: var(--surface);
+}
+
+.error {
+  color: var(--error);
+}
+
+/* The small button under an answer that opens the searches behind it. */
+.searches {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.searches svg {
+  width: 13px;
+  height: 13px;
+}
+
+.searches:hover,
+.searches[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Side panel with what the model asked the catalog and what it got back. */
+.details {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: clamp(380px, 40vw, 720px);
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.details[hidden] {
+  display: none;
+}
+
+/* Narrower screens: the panel covers the chat instead of squeezing it. */
+@media (max-width: 1100px) {
+  .details {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 10;
+    width: min(100%, 560px);
+    box-shadow: -8px 0 24px rgb(0 0 0 / 0.18);
+  }
+}
+
+.details-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px 10px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.details-top h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.close {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted);
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.close:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+.details-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px 24px;
+  font-size: 14px;
+}
+
+.tool-call + .tool-call {
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.tool-call h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.tool-call h4 {
+  margin: 14px 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tool-call p {
+  margin: 0;
+}
+
+.tool-call .none {
+  color: var(--muted);
+}
+
+.tool-call dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 14px;
+  margin: 0;
+}
+
+.tool-call dt {
+  color: var(--muted);
+}
+
+.tool-call dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.tool-call h5 {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tool-call h5 a {
+  color: inherit;
+}
+
+.tool-call h5 .site {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.tool-call pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.table-scroll {
+  margin-top: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.products {
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.products th,
+.products td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.products tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.products th {
+  background: var(--surface);
+  font-weight: 600;
+}
+
+/* The name stays in view while the other fields scroll sideways. */
+.products th:first-child,
+.products td:first-child {
+  position: sticky;
+  left: 0;
+  min-width: 190px;
+  max-width: 240px;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+  white-space: normal;
+}
+
+.products th:first-child {
+  background: var(--surface);
+}
+
+.benchmarks-view {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px 16px 32px;
+}
+
+.benchmarks-view[hidden],
+#messages[hidden],
+.bottom[hidden] {
+  display: none;
+}
+
+.benchmarks-view > * {
+  max-width: 1180px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.benchmarks-view h1 {
+  margin-top: 0;
+  margin-bottom: 4px;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.benchmarks-view .about,
+.benchmarks-view .none,
+.benchmarks-view .loading {
+  margin-top: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.bench {
+  margin-top: 28px;
+}
+
+.bench + .about {
+  margin-top: 16px;
+}
+
+.bench h2 {
+  margin: 0 0 4px;
+  font-size: 17px;
+}
+
+.bench code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--surface);
+  font-size: 13px;
+}
+
+.bench-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.bench-table th,
+.bench-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.bench-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.bench-table th {
+  background: var(--surface);
+  font-weight: 600;
+}
+
+.bench-table th[title] {
+  cursor: help;
+  text-decoration: underline dotted var(--muted);
+  text-underline-offset: 3px;
+}
+
+/* Column headers are buttons that sort the table. */
+.bench-table th.sortable button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+  text-decoration: inherit;
+  cursor: pointer;
+}
+
+.bench-table th.sortable button:hover,
+.bench-table th[aria-sort="ascending"] button,
+.bench-table th[aria-sort="descending"] button {
+  color: var(--accent);
+}
+
+.bench-table th .arrow {
+  display: inline-block;
+  min-width: 1em;
+  margin-left: 2px;
+  font-size: 10px;
+}
+
+.bench-table .num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.bench-table .best {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.bench-table td.model {
+  white-space: normal;
+}
+
+.bench-table .model strong,
+.bench-table .model span {
+  display: block;
+}
+
+.bench-table .model strong {
+  white-space: nowrap;
+}
+
+/* Phones: a narrow model column, so scores show next to it. */
+@media (max-width: 720px) {
+  .bench-table td.model {
+    min-width: 140px;
+    max-width: 170px;
+  }
+
+  .bench-table .model strong,
+  .bench-table .model span {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+.bench-table .model span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.bench-table .model .failed {
+  color: var(--warn);
+}
+
+.bench-table a {
+  color: var(--accent);
+}
+
+/* The model stays in view while the scores scroll sideways. */
+.bench-table th:first-child,
+.bench-table td:first-child {
+  position: sticky;
+  left: 0;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.bench-table th:first-child {
+  background: var(--surface);
+}
+
+.bottom {
+  padding: 12px 16px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+/* Above the message box, aligned with its left edge. */
+.composer-tools {
+  display: flex;
+  gap: 6px;
+  max-width: 760px;
+  margin: 0 auto 8px;
+}
+
+.composer textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 44px;
+  max-height: 200px;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  resize: none;
+  /* resize() fits the height to the text; a scrollbar only once it reaches max-height */
+  overflow-y: hidden;
+}
+
+.composer textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.composer-toggle {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 10px 0 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.composer-toggle svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.composer-toggle[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.composer-toggle[aria-pressed="true"] .off,
+.composer-toggle[aria-pressed="false"] .on {
+  display: none;
+}
+
+.composer-toggle:hover:not(:disabled) {
+  border-color: var(--border);
+}
+
+.composer-toggle[aria-pressed="true"]:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.composer-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.composer-toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.composer > button {
+  height: 44px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.composer > button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.hint {
+  max-width: 760px;
+  margin: 6px auto 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+/* Under an answer the guardrail gave instead of the chat model; the scores are in its title. */
+.guardrail-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 8px 0 0;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 18px;
+  cursor: help;
+}
+
+.guardrail-note svg {
+  width: 13px;
+  height: 13px;
+}

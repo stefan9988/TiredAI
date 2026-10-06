@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TiredAI</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script type="module" src="/static/app.js"></script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <button id="new-chat" type="button" class="new-chat">+ New chat</button>
+      <a id="benchmarks" class="benchmarks-link" href="/?view=benchmarks">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20V11M12 20V5M19 20v-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+        Benchmark results
+      </a>
+      <h2 id="chats-heading" class="chats-heading">Chats</h2>
+      <nav id="chats" class="chats" aria-labelledby="chats-heading"></nav>
+    </aside>
+
+    <div class="chat-pane">
+      <header class="top">
+        <div class="brand">
+          <strong>TiredAI</strong>
+          <span>Tire shopping assistant</span>
+        </div>
+        <div id="meta" class="meta">Connecting…</div>
+      </header>
+
+      <main id="messages" aria-live="polite">
+        <section id="empty" class="empty">
+          <h1>How can I help you find tires?</h1>
+          <p>Ask for a size, a specific tire, the tires that fit your car, or anything about tires.</p>
+          <div class="examples">
+            <button type="button" class="example">I need all-season tires in 205/60R15</button>
+            <button type="button" class="example">Goodyear Eagle F1 Asymmetric SUV-4X 255/50R19 103W</button>
+            <button type="button" class="example">What does UTQG mean?</button>
+            <button type="button" class="example">What tires fit my 2019 Toyota RAV4 LE?</button>
+          </div>
+        </section>
+      </main>
+
+      <section id="benchmarks-view" class="benchmarks-view" aria-live="polite" hidden></section>
+
+      <footer id="bottom" class="bottom">
+        <div class="composer-tools">
+          <button id="guardrail" type="button" class="composer-toggle" aria-pressed="true"
+                  title="Checks each message before the chat model sees it">
+            <svg class="on" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 3 8.3 7 9.5 4-1.2 7-5.1 7-9.5V6l-7-3Z"/><path d="m9 12 2 2 4-4"/></svg>
+            <svg class="off" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.4 3 8.3 7 9.5 4-1.2 7-5.1 7-9.5V6l-7-3Z"/><path d="m4 4 16 16"/></svg>
+            <span>Guardrail</span>
+          </button>
+          <button id="web-search" type="button" class="composer-toggle" aria-pressed="true"
+                  title="Lets the agent look up a vehicle's tire sizes on the web">
+            <svg class="on" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3Z"/></svg>
+            <svg class="off" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.8 5.5 3.8 9s-1.3 6.5-3.8 9c-2.5-2.5-3.8-5.5-3.8-9S9.5 5.5 12 3Z"/><path d="m4 4 16 16"/></svg>
+            <span>Web search</span>
+          </button>
+        </div>
+        <form id="composer" class="composer">
+          <textarea id="input" rows="1" maxlength="4000" placeholder="Ask about tires…" aria-label="Message"></textarea>
+          <button id="send" type="submit">Send</button>
+        </form>
+        <p class="hint">Enter to send, Shift+Enter for a new line.</p>
+      </footer>
+    </div>
+
+    <aside id="details" class="details" aria-labelledby="details-title" hidden>
+      <header class="details-top">
+        <h2 id="details-title">Searches behind this answer</h2>
+        <button id="details-close" type="button" class="close" aria-label="Close">×</button>
+      </header>
+      <div id="details-body" class="details-body"></div>
+    </aside>
+  </body>
+</html>

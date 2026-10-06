@@ -1,0 +1,39 @@
+[project]
+name = "tiredai"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "stefan dragicevic", email = "stefand998@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.142.2",
+    "fastembed>=0.8.1",
+    "httpx>=0.28.1",
+    "langchain>=1.4.3",
+    "langchain-openrouter>=0.2.9",
+    "langfuse==4.16.0",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "pandas>=3.0.6",
+    "pyarrow>=25.0.1",
+    "python-dotenv>=1.2.4",
+    "pyyaml>=6.0.3",
+    "qdrant-client>=1.19.1",
+    "uvicorn>=0.54.0",
+]
+
+[project.scripts]
+tiredai = "tiredai:main"
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
