@@ -1,14 +1,15 @@
 # TiredAI
 
-A RAG chatbot that helps shoppers find and understand tires from a catalog of about 10,000 products. It answers three kinds of requests:
+A RAG chatbot that helps shoppers find and understand tires from a catalog of about 10,000 products. It answers four kinds of requests:
 
 | Request | Example | What the assistant does |
 | --- | --- | --- |
 | Size search | "I need all-season tires in 205/60R15" | Matches the size exactly, asks for a missing size or preferences, recommends only matching, in-stock tires |
 | Product inquiry | "Goodyear Eagle F1 Asymmetric SUV-4X 255/50R19 103W" | Finds that exact product and answers from its data; says clearly when it isn't in the catalog instead of swapping in another tire |
 | Education | "What does UTQG mean?" | Answers from general tire knowledge without searching the catalog |
+| Vehicle lookup | "What tires fit my 2019 Toyota RAV4 LE?" | Looks the car up on tire-size websites, then searches the catalog in its size, or lists the sizes per trim and asks which one |
 
-It runs entirely on free tiers: an open model on OpenRouter, free or local embeddings, and a local Qdrant vector store.
+It can run entirely on free tiers: an open model on OpenRouter, free or local embeddings, and a local Qdrant vector store. Only the optional vehicle lookup is paid, about $0.007 per web search.
 
 ## Architecture
 
@@ -22,8 +23,8 @@ It runs entirely on free tiers: an open model on OpenRouter, free or local embed
                                                                                │ filters + hybrid ranking
  Browser (chat UI) ──▶ FastAPI ──▶ LangChain agent ──▶ search_tires tool ──────┘
  Terminal (chat.py) ─┘    │         (guardrail: Jev,
-                          │          OpenRouter LLM,
-                          │          system prompt)
+                          │          OpenRouter LLM,  ──▶ find_vehicle_tire_sizes tool ──▶ OpenRouter web search
+                          │          system prompt)       (cached in SQLite)               (four tire-size sites)
                           ▼
                  SQLite: conversation history
                  (LangGraph checkpoints + chat list)
@@ -36,19 +37,20 @@ It runs entirely on free tiers: an open model on OpenRouter, free or local embed
 | `src/tiredai/embeddings.py` | Dense embeddings (local fastembed or the OpenRouter API, cached on disk) and BM25 sparse vectors |
 | `src/tiredai/vectorstore.py` | Creates the Qdrant collection, loads products and verifies every stored payload |
 | `src/tiredai/search.py` | The `search_tires` tool: hard filters, hybrid ranking, sorting, and what the agent sees of each product |
+| `src/tiredai/vehicles.py` | The `find_vehicle_tire_sizes` tool: a web search for a vehicle's tire sizes on a few tire-size sites, cached |
 | `src/tiredai/agent.py` | The agent: OpenRouter chat model, system prompt, middleware for the guardrail, limits and tool errors, streaming |
 | `src/tiredai/guardrail.py` | The guardrail: asks Jev (TypeSafe's decision model) whether a message is in scope, manipulative or harmful |
 | `src/tiredai/api.py` | FastAPI server: chat (JSON and streamed), saved conversations, health, the chat page |
 | `src/tiredai/tracing.py` | Langfuse tracing: one trace per message, grouped by conversation |
 | `src/tiredai/static/` | The chat UI: plain HTML, CSS and JavaScript, with no build step |
-| `prompts/system.md` | System prompt: the three request types and the rules for product facts, searching and the conversation |
+| `prompts/system.md` | System prompt: the four request types and the rules for product facts, searching and the conversation |
 
 ### How a message is answered
 
 1. The chat page sends the shopper's message to `POST /chat/stream`.
 2. With the Guardrail button above the message box on (the default), Jev checks the message in the context of the recent conversation, in about half a second. If it is off-topic, manipulative or harmful, the shopper gets a fixed reply and the turn ends there: the chat model never sees the message.
 3. The agent sees the system prompt and the recent conversation, and decides what kind of request it is. Education questions are answered directly.
-4. For product questions it calls `search_tires`. Every constraint the shopper has given (size, budget, season, brand, ...) becomes a filter, and the product name or description becomes the query.
+4. For product questions it calls `search_tires`. Every constraint the shopper has given (size, budget, season, brand, ...) becomes a filter, and the product name or description becomes the query. A shopper who doesn't know the size but names the car first gets a vehicle lookup (`find_vehicle_tire_sizes`), which finds the factory sizes on the web.
 5. Qdrant applies the filters and ranks the matching products. The tool returns the number of matches and up to 20 products as JSON.
 6. The model writes its answer from those products only. The server streams status updates ("Searching the catalog: 205/60R15 · up to $80", "Found 4 tires"), each finished search, and the answer text as Server-Sent Events.
 7. The whole turn, including tool calls and results (or the guardrail's decision), is saved, so the conversation continues after a restart.
@@ -96,13 +98,25 @@ The system prompt requires every price, specification and SKU to come from searc
 
 To check an answer against its data, every answer that used the catalog has a small search button in the chat UI. It opens a side panel with each search's arguments as the model sent them, the filters actually applied, the number of matches, and the full table of products the model received, or the error it got instead. This works for saved conversations too, because tool calls and results are stored with the history.
 
-### A single tool, with guard rails around it
+### Two tools, with guard rails around them
 
-The agent has one tool, `search_tires`, and a system prompt that defines the three request types; the model decides on every message which one applies. Around it:
+The agent has two tools, `search_tires` and `find_vehicle_tire_sizes` (below), and a system prompt that defines the four request types; the model decides on every message which one applies. Around them:
 
 - **History window:** the model sees only the latest messages (`AGENT_HISTORY_MESSAGES`, default 10), cut at whole turns so a tool call is never separated from its result. The saved conversation keeps everything.
 - **Tool call limit:** at most `AGENT_MAX_TOOL_CALLS` searches per message (default 5). Further calls get an error result and the model answers with what it has.
 - **Tool failures reach the model:** a search that raises, an unknown argument (e.g. `speed_rating` instead of `min_speed_rating`), or arguments that aren't valid JSON all come back as error results the model can act on. If all of the model's calls were unparsable, it is asked again up to two times. Every tool call in the history keeps a result, which providers require.
+
+### Looking a car up when the shopper doesn't know the size
+
+Many shoppers know their car but not their tire size. `find_vehicle_tire_sizes` takes the year, make and model; the agent asks for whichever is missing and never guesses them. It searches four tire-size sites with OpenRouter's web search (the web plugin with the Exa engine) and returns the pages it found: site, address, title and the excerpt the search engine read.
+
+- **Four sites, chosen by testing:** tiresize.com, firestonecompleteautocare.com, mavis.com and goodyear.com returned the right car's page, with every trim's sizes in the excerpt, for each test car. Tire Rack and Discount Tire build their pages in the browser, so the search gets no sizes from them. Car review sites list one trim per page, and new-cars.com returned the wrong years. The list is `VEHICLE_LOOKUP_SITES`.
+- **The chat model reads the pages itself.** There is no second model to extract sizes. The system prompt tells it to use only pages about that exact year, make and model. A fitment is one size, or a pair of different front and rear sizes. If the shopper's trim has one fitment, the agent searches the catalog with it right away (one search per size of a pair). If it has several, the agent lists them by trim with the site and asks which one. The factory speed rating is mentioned when a page gives it, but not used as a filter. When no page fits, it says so and points to the sticker inside the driver's door.
+- **Cost:** OpenRouter only searches inside a chat completion, so a lookup is a 16-token completion whose text is thrown away (`VEHICLE_LOOKUP_MODEL`, by default the chat model). One search costs about $0.007, also with free models. Lookups that found pages are cached in SQLite without expiry, since factory sizes don't change.
+- **A switch per message:** the Web search button next to the Guardrail one (on by default, remembered in the browser) sets `web_search` on every request. With it off, the model doesn't get the tool and is told why. `scripts/chat.py --no-web-search` does the same in the terminal.
+- **Visible:** the side panel shows the pages behind an answer, each linked to its site, so the sizes can be checked.
+
+**Limitation: US cars only.** All four sites are US retailers, so they only list cars sold in the US, with their US trims. A 2017 Škoda Superb or a 2015 Renault Clio isn't found; the search then returns unrelated pages, and the agent says it couldn't find the car. For a car sold in both markets, such as a 2012 BMW X1, only the US versions are listed, which may not match a European car. wheel-size.com covers every market and has the right pages, but the excerpts the search engine reads from its tables are broken. The reliable fix is the [Wheel-Size API](https://api-demo.wheel-size.com/api-plans/): sizes as data per make, model, year and trim, for 14 regions including Europe. It is billed yearly: a free Sandbox (300 requests a day, testing only), then Basic at $450 a year (5,000 requests a day). Its terms require every search to be started by a real user, so benchmarks would still need frozen answers.
 
 ### A guardrail in front of the model
 
@@ -116,10 +130,11 @@ Off-topic and adversarial messages are stopped before they reach the chat model.
 - **A switch per message.** The Guardrail button above the chat page's message box (on by default, remembered in the browser) sets `guardrail` on every request, so it can be turned off to compare with the model on its own. API requests have it on unless they send `"guardrail": false`; `scripts/chat.py --no-guardrail` turns it off in the terminal. The benchmarks leave it off, so the agent benchmark still measures the chat model alone.
 - **Visible:** a blocked answer carries the decision (reason, block score, probabilities, model). The chat page shows "Blocked by the guardrail" and the reason under it with the scores on hover, also in reopened chats.
 
-### Free tier only
+### Free tier by default
 
 - **Chat model:** any OpenRouter model with tool calling; the default is `nvidia/nemotron-3-ultra-550b-a55b:free`. All generation parameters are optional, and unset ones are not sent.
 - **Embeddings:** local CPU embeddings with fastembed (`BAAI/bge-small-en-v1.5`, the default), or OpenRouter's free `nvidia/nemotron-3-embed-1b:free`. Free OpenRouter models allow 50 requests a day, so API vectors are cached in SQLite: indexing the catalog takes 40 requests once, and rebuilds are free. Free models get one request at a time, paced to their rate limit. Paid OpenRouter models aren't held to those limits, so batches are requested `EMBEDDING_CONCURRENCY` at a time (default 8). With `qwen/qwen3-embedding-8b`, that cut embedding the catalog from about 7 minutes to under a minute.
+- **Vehicle lookup:** the one paid part, about $0.007 per uncached web search. Without an OpenRouter key the agent simply doesn't have the tool.
 - **Vector store:** Qdrant instead of Pinecone. It runs as a local on-disk store with no account or server, supports dense and sparse vectors with server-side fusion, payload filters and ordering, and can point to a Qdrant server or Qdrant Cloud through `QDRANT_URL`.
 
 ## Observability
@@ -141,12 +156,14 @@ answer-shopper-message            span        input: the shopper's message, outp
       └─ ChatOpenRouter           generation  the answer written from the search results
 ```
 
+A vehicle lookup appears as a `find_vehicle_tire_sizes` tool with a `look-up-vehicle-sizes` retriever inside it: the vehicle, the search query and sites, the pages found, whether they came from the cache and what the search cost.
+
 With the guardrail on, the trace also holds a `check-message` observation of type guardrail: the state Jev read and its decision (probabilities, block score, reason). For a blocked message, the agent span has no model call and the trace's output is the guardrail's reply.
 
 The model calls and the catalog lookup are separate observations, so you can inspect retrieval and generation on their own. You can see what the model was asked, what the search applied and returned, and what the model answered from it. Each trace also carries:
 
 - **Tags:** where the message came from: `chat-stream` (the chat page), `chat` (the JSON endpoint) or `cli`.
-- **Metadata:** the chat model, the embedding model, the agent limits and whether the guardrail was on, to compare setups.
+- **Metadata:** the chat model, the embedding model, the agent limits and whether the guardrail and the web search were on, to compare setups.
 - **Environment:** from `LANGFUSE_TRACING_ENVIRONMENT`, so development traces stay apart from others.
 - **Errors:** a failed turn or query embedding is marked as an error, with the message. When searches go over the limit, the step that blocked them stays in the trace with the error results; otherwise that bookkeeping step is left out.
 
@@ -159,8 +176,8 @@ Two benchmarks show whether the system works and compare models, and a third mea
 | Benchmark | What it runs | Scores |
 | --- | --- | --- |
 | Retrieval (`scripts/benchmark_retrieval.py`) | 188 queries through the catalog search, per embedding model and ranking (hybrid as the app uses it, dense alone, BM25 alone) | Product queries: hit@1, hit@3, hit@10, reciprocal rank (mean = MRR). Descriptive queries: precision@10, nDCG@10 |
-| Agent (`scripts/benchmark_agent.py`) | 27 conversations (32 turns) through the real agent, per chat model | Intent accuracy, retrieval hit@3, filters applied, constraint correctness, groundedness, answer checks, passed; also latency per turn and tokens |
-| Guardrail (`scripts/benchmark_guardrail.py`) | 116 shopper messages to allow or block, 34 of them follow-ups after a real conversation, through TypeSafe's Jev decision model, each with no history, the agent's history window and the full history | Accuracy, false-block rate, share of bad messages caught, ROC AUC, best threshold; also latency, tokens and cost |
+| Agent (`scripts/benchmark_agent.py`) | 32 conversations (39 turns) through the real agent, per chat model | Intent accuracy, retrieval hit@3, filters applied, constraint correctness, groundedness, answer checks, passed; also latency per turn and tokens |
+| Guardrail (`scripts/benchmark_guardrail.py`) | 118 shopper messages to allow or block, 34 of them follow-ups after a real conversation, through TypeSafe's Jev decision model, each with no history, the agent's history window and the full history | Accuracy, false-block rate, share of bad messages caught, ROC AUC, best threshold; also latency, tokens and cost |
 
 ```bash
 uv run python scripts/benchmark_retrieval.py \
@@ -177,9 +194,10 @@ Without flags, both use the models in `.env`. `--check` only validates the cases
 - `retrieval_products.yaml`: 40 products sampled across car types (generated by `scripts/generate_retrieval_queries.py`, seeded), each asked for in four styles: the catalog name, how shoppers type it (`accelera phi-r 205 55 15`), with a typo, and the tread line without a size.
 - `retrieval_descriptive.yaml`: 30 needs such as "mud tires for my jeep". Relevance comes from catalog attributes (Mud Terrain, Truck/SUV or Light Truck).
 - `guardrail_cases.yaml`: messages the guardrail must allow (tires, wheels and services, cars, the store, small talk, other languages, a tire request mixed with an off-topic one, alarming but legitimate wording) or block (off-topic, writing only themed on tires, prompt injection, harm and fraud), and follow-ups such as "what about the second one?" after a list. The conversations before the follow-ups were played through the agent once and frozen in `guardrail_conversations.yaml` (`scripts/capture_guardrail_conversations.py`), so every run shows Jev the same real answers.
-- `agent_cases.yaml`: size searches (including loose formats, an LT size, a misspelled brand and incomplete sizes), product inquiries (including typos and products that don't exist), education questions, follow-ups that must keep their constraints ("something cheaper"), and off-topic and prompt-injection requests. Every product, size and price is a real catalog row, and `--check` verifies they still are.
+- `agent_cases.yaml`: size searches (including loose formats, an LT size, a misspelled brand and incomplete sizes), product inquiries (including typos and products that don't exist), education questions, follow-ups that must keep their constraints ("something cheaper"), vehicle lookups, and off-topic and prompt-injection requests. Every product, size and price is a real catalog row, and `--check` verifies they still are.
+- `vehicle_pages.yaml`: the pages the vehicle lookup found for the cars in the agent cases: a 2016 Ford Focus (pick the trim, or the S with one size), a 2016 Corvette Stingray (a front and rear pair), a 2019 RAV4 (the year is missing at first) and a 2021 Ford Focus, which the sites don't have. `scripts/capture_vehicle_pages.py` searches once for each new car and freezes the pages, so the agent benchmark never searches the web and every run reads the same pages.
 
-**Deterministic scoring.** The scores are checks against the catalog, not an LLM judge. Intent is read from what the agent did: education and off-topic questions must not search, a product inquiry must search for that product, and a size search must filter by the size (or ask first, where the case allows it). Every product the answer names must meet the turn's constraints and be in stock. Every price, SKU and spec it states must match the products the search returned. The details are in the docstrings of `src/tiredai/benchmarks/conversations.py` and `answers.py`; the comment on each score says which turn failed and why.
+**Deterministic scoring.** The scores are checks against the catalog, not an LLM judge. Intent is read from what the agent did: education and off-topic questions must not search, a product inquiry must search for that product, and a size search must filter by the size (or ask first, where the case allows it). A vehicle lookup must look the car up and then search every size of its one fitment, or ask which trim, or not search at all when the car wasn't found; with the year missing, it must ask instead of looking up. After a lookup, every tire size in the answer must be on its pages. Every product the answer names must meet the turn's constraints and be in stock. Every price, SKU and spec it states must match the products the search returned. The details are in the docstrings of `src/tiredai/benchmarks/conversations.py` and `answers.py`; the comment on each score says which turn failed and why.
 
 **In Langfuse,** the case files are synced to the datasets `tiredai-retrieval`, `tiredai-agent` and `tiredai-guardrail`: changed cases are updated and removed ones archived. Every run is a dataset run named after its model, with the git commit, the system prompt's hash and the agent settings in its metadata. Under the dataset's Experiments tab, runs of different models can be compared score by score. Each case is a trace with its scores. In the agent benchmark that trace holds the usual turn traces (tagged `benchmark`), so a failing turn can be inspected down to the search. The summary is also printed and saved to `benchmarks/results/` as Markdown, with every case's output and scores in a JSON file next to it.
 
@@ -203,6 +221,7 @@ The runs of 2026-10-05. The full reports are in [`benchmarks/results/`](benchmar
 - **qwen3-30b** failed two. It answered "show me something cheaper" from the earlier results without searching again, though the system prompt says to search again. It also said the nonexistent Michelin Pilot Sport 9 "is not available in 245/40R18", which suggests it exists in other sizes, instead of saying it isn't in the catalog.
 - **nemotron-3-ultra:free** failed four conversations, all on `503 Service temporarily overloaded` from Nvidia's free endpoint after three attempts. 15 of its 27 conversations needed a retry. Every conversation that completed passed. It is also about four times slower per turn.
 - No model recommended an out-of-stock tire, missed a hard constraint in its searches, or stated a price or spec the search didn't return. The one exception is ling's arithmetic slip.
+- **With the vehicle lookup** ([report](benchmarks/results/20261005T150559Z-agent.md); 32 conversations, 39 turns), `inclusionai/ling-3.0-flash-vl` passed all 32. Run three times, the five vehicle conversations always took the right route (lookup, then search, ask or decline). Two of the 15 failed a check: one answer left out the door sticker, and one stated a recommendation level the check attributed to the wrong product.
 
 **Retrieval** ([report](benchmarks/results/20261005T104820Z-retrieval.md); 158 product queries and 30 descriptive ones; commit `c5f5148`):
 
@@ -313,6 +332,11 @@ All settings live in `.env`; `.env.example` lists every option with comments. Th
 | `GUARDRAIL_MODEL` | `typesafe/jev-1.13` | The OpenRouter Decisions model that checks messages |
 | `GUARDRAIL_THRESHOLD` | `0.7` | Block score at or above which a message gets the guardrail's reply |
 | `GUARDRAIL_TIMEOUT_SECONDS` | `3` | A slower check lets the message through |
+| `VEHICLE_LOOKUP_SITES` | tiresize.com, firestonecompleteautocare.com, mavis.com, goodyear.com | The sites the vehicle lookup searches (comma-separated domains) |
+| `VEHICLE_LOOKUP_MAX_RESULTS` | `5` | Pages per lookup |
+| `VEHICLE_LOOKUP_MODEL` | the chat model | Model of the small completion that carries the search; set a cheap one if `LLM_MODEL` is expensive |
+| `VEHICLE_LOOKUP_TIMEOUT_SECONDS` | `20` | A slower search gives the agent an error result |
+| `VEHICLE_LOOKUP_CACHE_PATH` | `.cache/vehicle_pages.sqlite` | Cache of lookups that found pages |
 | `API_HOST` / `API_PORT` | `127.0.0.1` / `8000` | Server address; with Docker, `API_PORT` is the port opened on your machine |
 | `SYSTEM_PROMPT_PATH` | `prompts/system.md` | The system prompt |
 | `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | | Langfuse project keys; tracing is off without them |
@@ -325,12 +349,12 @@ The server is a local demo without authentication. Interactive docs are at `/doc
 
 | Endpoint | Description |
 | --- | --- |
-| `POST /chat` | Send `{"message": ..., "conversation_id": ..., "guardrail": true}` and get the whole reply. Omit `conversation_id` to start a new conversation; `"guardrail": false` skips the guardrail. When the guardrail answered, `guardrail` in the reply holds its decision. |
+| `POST /chat` | Send `{"message": ..., "conversation_id": ..., "guardrail": true, "web_search": true}` and get the whole reply. Omit `conversation_id` to start a new conversation; `"guardrail": false` skips the guardrail, and `"web_search": false` takes the vehicle lookup away for that message. When the guardrail answered, `guardrail` in the reply holds its decision. |
 | `POST /chat/stream` | The same, streamed as Server-Sent Events: `start`, then `status`, `tool_call` and `token` events as the agent works, then `end` (or `error`). A blocked message gets its reply as one `token`, then a `guardrail` event with the decision. |
 | `GET /conversations` | Every saved conversation, most recently active first; the title is its first message |
-| `GET /conversations/{id}/messages` | A conversation's messages; each answer lists its tool calls with the data the model received, and the guardrail's decision if it answered |
+| `GET /conversations/{id}/messages` | A conversation's messages; each answer lists its tool calls with the data the model received (products, or a vehicle lookup's pages), and the guardrail's decision if it answered |
 | `GET /benchmarks` | The latest benchmark result of each model, from `benchmarks/results/`, with what each score measures |
-| `GET /health` | Model name, vector store status, and whether the guardrail is available (it needs `OPENROUTER_API_KEY`) |
+| `GET /health` | Model name, vector store status, and whether the guardrail and the vehicle lookup are available (both need `OPENROUTER_API_KEY`) |
 
 ## Tests
 
@@ -338,7 +362,7 @@ The server is a local demo without authentication. Interactive docs are at `/doc
 uv run pytest
 ```
 
-The tests run offline: scripted chat models, a deterministic fake embedder and fake OpenRouter transports (embeddings and Jev's Decisions API) stand in for every external service, and `OPENROUTER_API_KEY` is blanked so nothing can reach OpenRouter by accident. They cover preprocessing round trips, size normalization and every search filter, the agent's limits and error handling, the guardrail (blocking, letting through, failing open, turning it off), the API and streaming, conversation storage, and the benchmarks' metrics, answer checks and Langfuse dataset sync. The chat page's JavaScript helpers are tested with `node --test tests/ui/lib.test.mjs`, which pytest also runs when Node.js is installed.
+The tests run offline: scripted chat models, a deterministic fake embedder and fake OpenRouter transports (embeddings, chat completions with web search results, and Jev's Decisions API) stand in for every external service, and `OPENROUTER_API_KEY` is blanked so nothing can reach OpenRouter by accident. They cover preprocessing round trips, size normalization and every search filter, the agent's limits and error handling, the guardrail (blocking, letting through, failing open, turning it off), the vehicle lookup (which pages are kept, caching, errors, the web search switch), the API and streaming, conversation storage, and the benchmarks' metrics, answer checks and Langfuse dataset sync. The chat page's JavaScript helpers are tested with `node --test tests/ui/lib.test.mjs`, which pytest also runs when Node.js is installed.
 
 ## Project layout
 
@@ -346,8 +370,8 @@ The tests run offline: scripted chat models, a deterministic fake embedder and f
 prompts/system.md         system prompt
 scripts/                  analyze_dataset, preprocess_dataset, build_index, chat, serve, start (Docker entrypoint),
                           benchmark_retrieval, benchmark_agent, benchmark_guardrail,
-                          generate_retrieval_queries, capture_guardrail_conversations
-src/tiredai/              preprocessing, documents, embeddings, vectorstore, search, guardrail, agent, api, conversations, config,
+                          generate_retrieval_queries, capture_guardrail_conversations, capture_vehicle_pages
+src/tiredai/              preprocessing, documents, embeddings, vectorstore, search, vehicles, guardrail, agent, api, conversations, config,
                           startup, tracing
 src/tiredai/static/       chat UI (index.html, app.js, lib.mjs, style.css)
 src/tiredai/benchmarks/   benchmark cases, scoring and Langfuse experiments

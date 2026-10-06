@@ -39,6 +39,9 @@ def test_chat_page_is_served_at_the_root(client):
     assert 'id="benchmarks" class="benchmarks-link" href="/?view=benchmarks"' in response.text
     assert 'id="benchmarks-view"' in response.text and "Benchmark results" in response.text
     assert 'id="guardrail" type="button" class="composer-toggle" aria-pressed="true"' in response.text  # on by default
+    # One example per kind of request; the last one makes the agent look the car up on the web.
+    assert response.text.count('class="example"') == 4
+    assert '<button type="button" class="example">What tires fit my 2019 Toyota RAV4 LE?</button>' in response.text
     # The web search switch sits right of the guardrail's, also on by default.
     assert response.text.index('id="guardrail"') < response.text.index('id="web-search" type="button" class="composer-toggle" aria-pressed="true"')
 
