@@ -11,6 +11,8 @@ A RAG chatbot that helps shoppers find and understand tires from a catalog of ab
 
 It can run entirely on free tiers: an open model on OpenRouter, free or local embeddings, and a local Qdrant vector store. Only the optional vehicle lookup is paid, about $0.007 per web search.
 
+![The chat page in dark mode: a new chat with the four example questions](docs/chat-page-dark.png)
+
 ## Architecture
 
 ```
@@ -378,5 +380,6 @@ src/tiredai/benchmarks/   benchmark cases, scoring and Langfuse experiments
 benchmarks/               benchmark cases (YAML) and results/
 tests/                    pytest suite; tests/ui/ holds the JavaScript tests
 data/                     raw CSV, processed Parquet, vector store and conversation history (not in git)
+docs/                     screenshot of the chat page
 Dockerfile, docker-compose.yml
 ```

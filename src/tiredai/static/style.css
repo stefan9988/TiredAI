@@ -365,7 +365,12 @@ body {
   font-size: 13px;
 }
 
+/* Cells break only between words; a table wider than the answer scrolls sideways. */
 .answer table {
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  overflow-x: auto;
   border-collapse: collapse;
   font-size: 14px;
 }
@@ -375,6 +380,7 @@ body {
   padding: 6px 10px;
   border: 1px solid var(--border);
   text-align: left;
+  overflow-wrap: normal;
 }
 
 .answer th {
